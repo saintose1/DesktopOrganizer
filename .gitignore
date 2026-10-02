@@ -1,0 +1,28 @@
+# Build output
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+coverage/
+*.log
+
+# IDE and user settings
+.vs/
+.idea/
+*.user
+*.suo
+*.sln.docstates
+*.DotSettings.user
+
+# Local SDK and package caches
+.tools/
+.nuget/
+
+# OS files and secrets
+Thumbs.db
+Desktop.ini
+.env
+.env.*
+!.env.example
+*.pfx
+*.publishsettings
