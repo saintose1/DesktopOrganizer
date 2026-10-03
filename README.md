@@ -25,7 +25,25 @@ dotnet run --project src/DesktopOrganizer.App
 ~~~
 
 Готовый exe: src/DesktopOrganizer.App/bin/Debug/net10.0-windows/DesktopOrganizer.App.exe.
-Перед пересборкой закройте приложение, чтобы оно не удерживало DLL.
+Перед пересборкой выберите «Выход» в меню трея, чтобы приложение освободило DLL.
+
+## Системный трей
+
+Значок DesktopOrganizer находится в области уведомлений рядом с часами (Windows может
+поместить его под стрелку скрытых значков). Крестик и Alt+F4 скрывают главное окно:
+Fences, работа с настоящими значками и автоматическое сохранение продолжаются.
+Один клик ЛКМ по значку показывает **то же окно** и активирует его; свёрнутое окно
+восстанавливается. ПКМ открывает «Открыть DesktopOrganizer» и «Выход».
+
+«Выход» дожидается окончания текущей операции, возвращает временно скрытые значки
+на рабочий стол, восстанавливает свойства Explorer, удаляет значок трея и завершает
+процесс. Состояние collapse и назначения сохраняются: при следующем запуске
+значки свёрнутых Fences снова скрываются. Ошибка восстановления отменяет выход
+и показывает сообщение; если Explorer отсутствует, журнал возврата сохраняется.
+Закрытие окна не записывает лишний снимок и не перезаписывает повреждённые данные.
+Дизайн главного окна не изменён; автоматический запуск Windows не добавлен.
+
+Проверки и ограничения: [milestone трея](docs/MILESTONE-TRAY.md).
 
 ## Использование
 
@@ -138,9 +156,23 @@ Region рамки исключает content; body не имеет вырезо�
 Body имеет WS_EX_TRANSPARENT и WS_DISABLED. WM_NCHITTEST рамки возвращает
 HTCLIENT только для header/actions/resize, а для content — HTTRANSPARENT.
 Color-key pixels самого layered ListView пропускают mouse hit к DefView.
-Существующий Raw Input receiver передаёт пропущенный background press обратно
-в настоящий ListView; Explorer сам выполняет capture/selection. Глобальный mouse
-hook, fullscreen input overlay и собственная рамка выделения не используются.
+Для background gesture используется узкий WH_MOUSE_LL router на отдельном потоке:
+пропущенный DOWN передаётся в настоящий ListView до доставки DefView.
+WM_MOUSEMOVE никогда не подавляется: иначе Windows не двигает курсор. После capture
+Explorer получает настоящие MOVE/UP; до capture быстрый UP дополнительно передаётся
+в ListView без подавления оригинала. Это устраняет конкуренцию первого DOWN и
+регрессию с застыванием курсора в предыдущем router.
+Explorer сам выполняет capture/selection; его opaque icon hits, header/borders
+и другие приложения проходят обычным путём. Raw Input остаётся наблюдением drop,
+без повторной передачи mouse messages. Fullscreen input overlay, собственная
+рамка выделения, injection и subclassing чужого окна не используются.
+Перед native marquee guard восстанавливает исходные свойства ListView;
+после release возвращает Fence composition. Без Fence свойства не меняются.
+Видео пользователя от 2 октября показало, что восстановление свойств само по себе
+не доказывает правильные пиксели marquee. В этой конфигурации работают Wallpaper
+Engine и Windhawk; окончательный rendering fix ещё требует A/B реальной мышью.
+Прозрачный участок внутри настоящей иконки теперь определяется Shell hit-test
+и не запускает переключение composition как пустой desktop.
 WPF растеризует только заголовок; premultiplied bitmaps передаются UpdateLayeredWindow.
 Drag не растеризует body/header и перемещает оба HWND одним DeferWindowPos batch.
 Fullscreen overlay, DLL injection,
@@ -155,19 +187,73 @@ IFolderView2.SelectAndPositionItems + SetRedraw(true), чтобы Explorer об�
 старой/новой геометрии иконок/поверхности, без полного desktop repaint во время жеста.
 Новейшая пачка координат заменяет ожидающую, очередь кадров не накапливается.
 
+Multi-drag сохраняет реальный selected set через IFolderView2.GetSelection / IShellItemArray
+уже при press: stable identities и initial positions копируются до движения.
+Общий target определяется release point; весь set назначается/снимается одним
+proposal, независимо от отдельных final bounds. Пока gesture активен, automatic
+layout не выполняется. Восстановление assignment по отдельным final bounds удалено.
+Post-drop на STA worker: final snapshot → pure Core layout; если targets пуст,
+positioning/redraw не выполняются. Иначе короткий SetRedraw(false) → один bulk →
+SetRedraw(true). Readback, recovery journal и durable save выполняются
+после возобновления redraw, без дополнительного damage repaint. При конфликтующей
+финальной записи Explorer proposal отклоняется; успешный drop не повторяет bulk.
+Отчёт с причинами, счётчиками, компромиссами и manual acceptance:
+[Explorer interaction stabilization](docs/STABILIZATION-EXPLORER-GESTURES.md).
+
+Обычный клик и marquee по пустому desktop не переключают composition ListView и
+не вызывают две полные перерисовки. Для выделения по фону Explorer рисует свою
+штатную контурную рамку без alpha fill: layered/color-key backing остаётся тем же
+на всём протяжении жеста. Клики по значкам, OLE drag и positioning используют
+двойную буферизацию; только классифицированный press по пустому фону временно
+выключает её до forwarded DOWN. При закрытии исходные свойства возвращаются.
+Реальная проверка четырёх selected items обнаружила пропуски прежнего обхода
+GetSelectedItem: он возвращал индексы 1,3 вместо 0,1,2,3. Полный IShellItemArray
+устраняет эту потерю; маленький Fence принимает весь set и увеличивает высоту сетки.
+Восстановление Z-order меняет только собственные HWND с неправильным порядком,
+одним DeferWindowPos batch без background erase; оно реагирует на reorder Explorer,
+не дожидаясь polling. Повторный desktop click не активирует уже активный desktop root.
+
+Пользователь подтвердил отсутствие мигания при обычном desktop click. Прежнее
+мигание marquee связано с временным original wallpaper backing поверх Fence body.
+Исправление включено в основной сборке: LVS_EX_DOUBLEBUFFER отключается только
+на период выделения по фону. Постоянное отключение было причиной регрессии drag
+и отменено. Компромисс —
+контурная рамка вместо современной полупрозрачной заливки. A/B stage 6 соответствует
+новому режиму, stage 5 воспроизводит прежний guard. `--outline-composition` проверяет
+неизменность backing при begin/end (меняется только double-buffering bit),
+0 наших composition redraw, отсутствие новых bitmap presents и восстановление
+свойств при shutdown. Пользователь подтвердил отсутствие мигания marquee в
+предыдущей сборке; icon drag в новом scoped режиме требует physical acceptance.
+Property/API probe не объявляется visual PASS.
+
 ## Проверки и ограничения
 
-2 октября 2026 года, SDK 10.0.401:
+3 октября 2026 года, SDK 10.0.401:
 
-- Debug/Release build: 0 ошибок, 0 предупреждений; 158 unit tests проходят.
+- После stabilization Explorer gestures: Debug/Release build — 0 ошибок и
+  предупреждений; 207 unit tests в каждой конфигурации. Native probe selected set:
+  все 4 items, anchor и 4 initial positions; пустой set обрабатывается без ошибки.
+  Native probe: 5 настоящих
+  items — 1 bulk position / 1 redraw completion; redraw lease около 18,6 ms.
+  Rendering API regression с 10 icons
+  и пустым Fence проходит; после него восстановлены все 54 исходные позиции.
+  Видео разобрано; A/B слоёв подготовлен. Исправление всех трёх дефектов пока
+  нельзя считать подтверждённым: marquee/group OLE/blink требуют acceptance по
+  [текущему отчёту](docs/STABILIZATION-EXPLORER-GESTURES.md).
+- После исправления застывания курсора: Debug/Release build — 0 ошибок,
+  0 предупреждений; 174 unit tests проходят.
 - Настоящий Explorer: прочитаны 52 иконки, проверены перемещение/восстановление
   трёх ярлыков, назначение, grid, перенос с группой, resize, collapse и вынос наружу.
 - Header/resize hit возвращает собственный Fence HWND. Color-key background
-  hit возвращает DefView; raw background handoff направляет press в ListView.
+  hit возвращает DefView; background router направляет gesture в ListView.
   Native WM_NCHITTEST content возвращает HTTRANSPARENT.
 - [Исправление Explorer selection rectangle](docs/FIX-EXPLORER-SELECTION.md):
-  причина, HWND hit path, routing и ручной checklist. Физический selection/OLE
-  drag после этого исправления пока не подтверждён.
+  причина, HWND hit path, routing и ручной checklist. Headless native probe
+  проверяет только создание/освобождение router; физический selection/OLE
+  drag проверяется отдельно. Исправленная копия запущена с отдельным StorageDirectory,
+  Connected/1 surface; реальная desktop surface просмотрена при 150% DPI.
+  Средство Computer Use не адресует desktop child HWND: проверка самого mouse
+  gesture выполняется пользователем, а не выдаётся за успешный GUI replay.
 - Приложение запущено, закрыто и запущено снова: две группы и точные позиции
   двух иконок восстановились из JSON. Пользовательские позиции после проверки
   возвращены. Реальные экранные снимки просмотрены; текущий DPI — 150%.

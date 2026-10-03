@@ -12,6 +12,20 @@ internal static class NativeMethods
     internal delegate nint WindowProc(nint window, uint message, nint wParam, nint lParam);
     internal delegate bool MonitorProc(nint monitor, nint dc, ref Rect bounds, nint parameter);
     internal delegate void WinEventProc(nint hook, uint kind, nint window, int objectId, int childId, uint thread, uint time);
+    internal delegate nint MouseHookProc(int code, nint message, nint data);
+    [StructLayout(LayoutKind.Sequential)] internal struct MouseHookData
+    { public Point Position; public uint MouseData, Flags, Time; public nuint Extra; }
+    [StructLayout(LayoutKind.Sequential)] internal struct Message
+    { public nint Window; public uint Id; public nuint WParam; public nint LParam; public uint Time; public Point Position; public uint Private; }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern nint SetWindowsHookEx(int kind, MouseHookProc callback, nint module, uint thread);
+    [DllImport("user32.dll", SetLastError = true)] internal static extern bool UnhookWindowsHookEx(nint hook);
+    [DllImport("user32.dll")] internal static extern nint CallNextHookEx(nint hook, int code, nint message, nint data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern int GetMessage(out Message message, nint window, uint minimum, uint maximum);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool PeekMessage(out Message message, nint window, uint minimum, uint maximum, uint remove);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern bool PostThreadMessage(uint thread, uint message, nint wParam, nint lParam);
+    [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(nint window);
+    [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
     [DllImport("user32.dll", SetLastError = true)] internal static extern nint SetWinEventHook(uint minimum, uint maximum, nint module, WinEventProc callback, uint process, uint thread, uint flags);
     [DllImport("user32.dll")] internal static extern bool UnhookWinEvent(nint hook);
     [DllImport("user32.dll")] internal static extern nint GetWindow(nint window, uint command);
@@ -44,6 +58,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")] internal static extern bool UpdateWindow(nint window);
     [DllImport("user32.dll")] internal static extern nint WindowFromPoint(Point point);
     [DllImport("user32.dll")] internal static extern uint GetMessagePos();
+    [DllImport("user32.dll")] internal static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool ScreenToClient(nint window, ref Point point);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern bool PostMessage(nint window, uint message, nint wParam, nint lParam);
     [DllImport("gdi32.dll")] internal static extern int StretchDIBits(nint dc, int x, int y, int width, int height,
@@ -118,6 +133,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(nint window);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] internal static extern nint GetModuleHandle(string? name);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern ushort RegisterClassEx(ref WindowClass windowClass);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool UnregisterClass(string className, nint instance);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern nint CreateWindowEx(uint extendedStyle, string className, string title, uint style, int x, int y, int width, int height, nint parent, nint menu, nint instance, nint parameter);
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool DestroyWindow(nint window);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint DefWindowProc(nint window, uint message, nint wParam, nint lParam);

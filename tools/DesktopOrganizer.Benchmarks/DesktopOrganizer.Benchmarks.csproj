@@ -3,6 +3,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <OutputType>Exe</OutputType>
+    <ApplicationManifest>../../src/DesktopOrganizer.App/app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../../src/DesktopOrganizer.App/DesktopOrganizer.App.csproj" /></ItemGroup>
 </Project>

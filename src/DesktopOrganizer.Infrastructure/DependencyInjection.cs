@@ -21,9 +21,11 @@ public static class DependencyInjection
         services.AddSingleton<IFenceStore>(provider => new JsonFenceStore(
             storageDirectory, provider.GetRequiredService<ILogger<JsonFenceStore>>()));
         services.AddSingleton<DesktopDiscovery>();
+        services.AddSingleton<ExplorerInteractionTrace>();
         services.AddSingleton<IIconRecoveryStore>(p => new JsonIconRecoveryStore(storageDirectory, p.GetRequiredService<ILogger<JsonIconRecoveryStore>>()));
         services.AddSingleton(p => new Win32DesktopHost(p.GetRequiredService<DesktopDiscovery>(),
-            p.GetRequiredService<ILogger<Win32DesktopHost>>(), Path.Combine(storageDirectory, "desktop-presentation.json")));
+            p.GetRequiredService<ILogger<Win32DesktopHost>>(), Path.Combine(storageDirectory, "desktop-presentation.json"),
+            interactionTrace: p.GetRequiredService<ExplorerInteractionTrace>()));
         services.AddSingleton<DesktopOrganizer.Core.Desktop.IDesktopIconService, DesktopIconService>();
 
         services.AddSerilog((_, configuration) => configuration

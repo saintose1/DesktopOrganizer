@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using DesktopOrganizer.App.Desktop;
 using DesktopOrganizer.Core.Desktop;
+using DesktopOrganizer.Infrastructure.Interop;
 
 namespace DesktopOrganizer.App;
 
@@ -49,6 +50,8 @@ public partial class App : Application
             builder.Services.AddSingleton<MainWindow>();
             builder.Services.AddSingleton<FenceBitmapRenderer>();
             builder.Services.AddSingleton<DesktopIntegrationService>();
+            builder.Services.AddSingleton<WindowsTrayIcon>();
+            builder.Services.AddSingleton<TrayApplicationService>();
             builder.Services.AddSingleton<IDesktopIntegration>(provider => provider.GetRequiredService<DesktopIntegrationService>());
 
             _host = builder.Build();
@@ -56,6 +59,7 @@ public partial class App : Application
             await _host.StartAsync();
 
             MainWindow = _host.Services.GetRequiredService<MainWindow>();
+            _host.Services.GetRequiredService<TrayApplicationService>().Start();
             MainWindow.Show();
             _host.Services.GetRequiredService<DesktopIntegrationService>().Start();
             _logger.LogInformation("DesktopOrganizer started");
@@ -77,6 +81,7 @@ public partial class App : Application
         try
         {
             _logger?.LogInformation("DesktopOrganizer shutting down");
+            _host?.Services.GetService<TrayApplicationService>()?.Dispose();
             _host?.Services.GetService<DesktopIntegrationService>()?.Dispose();
             _host?.StopAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
         }
@@ -86,10 +91,20 @@ public partial class App : Application
         }
         finally
         {
-            _host?.Dispose();
-            if (_ownsMutex) _instanceMutex?.ReleaseMutex();
-            _instanceMutex?.Dispose();
-            base.OnExit(e);
+            try { _host?.Dispose(); }
+            catch (Exception exception) { _logger?.LogError(exception, "Resource cleanup failed"); }
+            finally
+            {
+                if (_ownsMutex) _instanceMutex?.ReleaseMutex();
+                _instanceMutex?.Dispose();
+                base.OnExit(e);
+            }
         }
+    }
+
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        _host?.Services.GetService<TrayApplicationService>()?.AllowSessionExit();
+        base.OnSessionEnding(e);
     }
 }

@@ -108,7 +108,7 @@ internal interface IFolderView2
     [PreserveSig] int GetItem(int index, ref Guid iid, out nint item);
     [PreserveSig] int GetVisibleItem(int start, bool previous, out int index);
     [PreserveSig] int GetSelectedItem(int start, out int index);
-    [PreserveSig] int GetSelection(bool noneImpliesFolder, out nint selection);
+    [PreserveSig] int GetSelection([MarshalAs(UnmanagedType.Bool)] bool noneImpliesFolder, out IShellItemArray selection);
     [PreserveSig] int GetSelectionState(nint pidl, out uint flags);
     [PreserveSig] int InvokeVerbOnSelection([MarshalAs(UnmanagedType.LPStr)] string verb);
     [PreserveSig] int SetViewModeAndIconSize(uint mode, int size);
@@ -116,4 +116,26 @@ internal interface IFolderView2
     [PreserveSig] int SetGroupSubsetCount(uint count);
     [PreserveSig] int GetGroupSubsetCount(out uint count);
     [PreserveSig] int SetRedraw([MarshalAs(UnmanagedType.Bool)] bool enabled);
+}
+
+[ComImport, Guid("B63EA76D-1F85-456F-A19C-48159EFA858B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IShellItemArray
+{
+    [PreserveSig] int BindToHandler(nint context, ref Guid handler, ref Guid iid, out nint value);
+    [PreserveSig] int GetPropertyStore(uint flags, ref Guid iid, out nint value);
+    [PreserveSig] int GetPropertyDescriptionList(nint key, ref Guid iid, out nint value);
+    [PreserveSig] int GetAttributes(uint flags, uint mask, out uint attributes);
+    [PreserveSig] int GetCount(out uint count);
+    [PreserveSig] int GetItemAt(uint index, out IShellItem item);
+    [PreserveSig] int EnumItems(out nint enumerator);
+}
+
+[ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IShellItem
+{
+    [PreserveSig] int BindToHandler(nint context, ref Guid handler, ref Guid iid, out nint value);
+    [PreserveSig] int GetParent(out IShellItem parent);
+    [PreserveSig] int GetDisplayName(uint form, out nint name);
+    [PreserveSig] int GetAttributes(uint mask, out uint attributes);
+    [PreserveSig] int Compare(IShellItem other, uint hint, out int order);
 }

@@ -62,12 +62,11 @@ internal static class DesktopSmoke
             var coordinator = (DesktopIconCoordinator)typeof(DesktopIntegrationService).GetField("_icons", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(desktop)!;
             ((System.Windows.Threading.DispatcherTimer)typeof(DesktopIconCoordinator).GetField("_timer", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(coordinator)!).Stop();
             var fence = vm.Fences[0];
-            await native.PositionAsync(probes.Select((i, index) => new DesktopIconTarget(i.StableId, new(fence.X + 100 + index * 100, fence.Y + 100))).ToArray());
-            // Shell API calls need not emit accessibility events. Replay the notification adapter,
-            // not mouse/OLE input; the real release is delivered through Raw Input in production.
-            typeof(Win32DesktopHost).GetMethod("OnIconsChanged", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(host, null);
+            await PositionThroughDropAdapter(coordinator, native, probes,
+                probes.Select((i, index) => new DesktopIconTarget(i.StableId, new(fence.X + 100 + index * 100, fence.Y + 100))).ToArray(),
+                new(fence.X + 100, fence.Y + 100));
             await Wait(() => vm.Fences[0].Icons.Length == 3);
-            Check(true, "Release-notification adapter reconciled real Shell positions with the 250ms fallback timer disabled (API replay)");
+            Check(true, "Captured-group adapter reconciled real Shell positions with polling disabled (API/adapter replay, not real mouse/OLE or selected-set capture)");
             Check(store.Load().Fences[0].Icons.Length == 3, "Post-move detection assigned/persisted three real icons");
             await CheckPositions(native, vm.Fences[0]);
             Console.WriteLine(DesktopDiagnostics.IconVisibility(host.Handles!));
@@ -123,6 +122,13 @@ internal static class DesktopSmoke
             Check(DesktopDiagnostics.WindowAt(new(vm.Fences[0].X + 50, vm.Fences[0].Y + FenceInteractionGeometry.HeaderHeight * scale - 4))
                 .Contains("DesktopOrganizer.FenceSurface"), "Collapsed header retains its full input region");
             Capture(host, directory, "collapsed");
+            await desktop.PrepareExitAsync();
+            Check(IconPlacement.AtTargets(await native.ReadAsync(), IconPlacement.ReturnPositions(vm.Fences.ToArray())),
+                "Graceful exit returns collapsed real icons to desktop before restoring Explorer properties");
+            Check(store.Load().Fences[0].IsCollapsed && store.Load().Fences[0].Icons.Length == 3,
+                "Graceful exit preserves persisted collapse and assignments");
+            Check(new JsonIconRecoveryStore(directory, NullLogger<JsonIconRecoveryStore>.Instance).Load().Count == 0,
+                "Return journal cleared only after verified icon restoration");
             desktop.Dispose(); desktop = null; icons.Dispose(); icons = null; window.Close(); window = null;
             native.Dispose(); // Restore grid before reconnect to exercise first-position folder-flag changes.
             using var restartedReader = Icons();
@@ -144,7 +150,9 @@ internal static class DesktopSmoke
             var headerAfterRestore = DesktopDiagnostics.WindowAt(new(vm.Fences[0].X + 50, vm.Fences[0].Y + 12));
             Console.WriteLine($"Header after cold icon restore: {headerAfterRestore}");
             Check(headerAfterRestore.Contains("DesktopOrganizer.FenceSurface"), "Header remains interactive after Shell restores icon positions");
-            await restartedReader.PositionAsync([new(probes[0].StableId, new(1800, 700))]);
+            coordinator = (DesktopIconCoordinator)typeof(DesktopIntegrationService).GetField("_icons", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(desktop)!;
+            var outgoing = (await restartedReader.ReadAsync()).Icons.Single(i => i.StableId == probes[0].StableId);
+            await PositionThroughDropAdapter(coordinator, restartedReader, [outgoing], [new(outgoing.StableId, new(1800, 700))], new(1800, 700));
             await Wait(() => vm.Fences[0].Icons.Length == 2);
             var afterOut = (await restartedReader.ReadAsync()).Icons.Single(i => i.StableId == probes[0].StableId);
             Check(afterOut.Position == new DesktopPoint(1800, 700), "Unassigned real icon remains at new desktop position");
@@ -156,13 +164,29 @@ internal static class DesktopSmoke
             desktop?.Dispose(); icons?.Dispose(); window?.Close();
             using var restoreReader = Icons();
             await restoreReader.ReadAsync();
-            await restoreReader.PositionAsync(probes.Select(i => new DesktopIconTarget(i.StableId, i.Position)).ToArray());
-            var restored = await restoreReader.ReadAsync();
-            foreach (var probe in probes)
-                Check(restored.Icons.Single(i => i.StableId == probe.StableId).Position == probe.Position, "Original user icon position restored");
+            var originalTargets = initial.Icons.Select(i => new DesktopIconTarget(i.StableId, i.Position)).ToArray();
+            await restoreReader.PositionAsync(originalTargets);
+            restoreReader.Dispose();
+            using var verifier = Icons();
+            Check(IconPlacement.AtTargets(await verifier.ReadAsync(), originalTargets),
+                $"All {originalTargets.Length} original desktop item positions restored after grid restoration");
         }
     }
     private static void SetApplicationWindow(Window window) { Application.Current.MainWindow = window; }
+    private static async Task PositionThroughDropAdapter(DesktopIconCoordinator coordinator, DesktopIconService native,
+        IReadOnlyList<DesktopIcon> source, IReadOnlyList<DesktopIconTarget> targets, DesktopPoint release)
+    {
+        // Contract/API replay with actual item identities, not real selection, input or OLE.
+        // Programmatic Shell motion alone must no longer infer individual item assignments.
+        var notify = typeof(DesktopIconCoordinator).GetMethod("OnExplorerPointer", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .CreateDelegate<Action<ExplorerPointerEvent>>(coordinator);
+        var selection = new DesktopSelection(source.Select(i => i.StableId).ToArray(), source[0].StableId)
+            { InitialPositions = source.Select(i => new DesktopIconTarget(i.StableId, i.Position)).ToArray() };
+        notify(new(ExplorerPointerPhase.Pressed, source[0].Position, false, true) { SelectionSnapshot = Task.FromResult(selection) });
+        notify(new(ExplorerPointerPhase.DragStarted, source[0].Position, false, true));
+        await native.PositionAsync(targets);
+        notify(new(ExplorerPointerPhase.Released, release, false, true));
+    }
     private static DesktopIconService Icons() => new(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
     private static Win32DesktopHost Host() => new(new DesktopDiscovery(NullLogger<DesktopDiscovery>.Instance), NullLogger<Win32DesktopHost>.Instance);
     private static DesktopIntegrationService Desktop(Win32DesktopHost host, DesktopIconService icons, string directory) => new(host, new FenceBitmapRenderer(), NullLogger<DesktopIntegrationService>.Instance, icons,

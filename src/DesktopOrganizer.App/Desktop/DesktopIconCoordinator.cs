@@ -1,6 +1,8 @@
 using System.Buffers;
 using System.Collections;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows.Threading;
 using DesktopOrganizer.Core.Desktop;
 using DesktopOrganizer.Core.Models;
@@ -25,11 +27,15 @@ public sealed class DesktopIconCoordinator : IDisposable
     private IReadOnlyList<DesktopIconTarget> _recovery = [];
     private IReadOnlyList<Fence> _fences = [];
     private Dictionary<string, DesktopIcon> _matched = new(FenceIconLayout.IdentityComparer);
-    private Dictionary<string, DesktopIcon> _baseline = new(FenceIconLayout.IdentityComparer);
     private IReadOnlyList<DesktopArea> _monitors = [];
     private MoveBatch? _pending;
     private bool _reading, _moving, _initialized, _disposed, _applyingDrop, _positioningAvailable, _requested, _scheduled, _recoveryLoaded;
     private long _revision;
+    private readonly ExplorerGesture _explorerGesture = new();
+    private Task? _selectionRead;
+    private bool _layoutDeferred;
+    private bool _stopping;
+    public ExplorerGesturePhase ExplorerPhase => _explorerGesture.Phase;
     private TaskCompletionSource? _idle;
     public event Action<long, double>? FramePresented;
     public long LastPresentationAt { get; private set; }
@@ -47,27 +53,67 @@ public sealed class DesktopIconCoordinator : IDisposable
         _releaseTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(16) };
         _timer.Tick += OnTick; _releaseTimer.Tick += OnReleaseTick;
         _host.IconPositionsChanged += OnExplorerChanged;
+        _host.ExplorerPointer += OnExplorerPointer;
+        _host.SetSelectionReader(icons as IDesktopSelectionReader);
     }
     public void Start() { _timer.Start(); RequestObservation(); }
     public void SetFences(IReadOnlyList<Fence> fences)
     {
         _fences = fences; _revision++;
-        if (_initialized && _positioningAvailable && !_applyingDrop && !InteractionActive && !_host.HasActiveInteraction) QueueAll();
+        if (_initialized && _positioningAvailable && !_applyingDrop && !InteractionActive && !_host.HasActiveInteraction)
+        {
+            if (ExplorerBusy()) _layoutDeferred = true;
+            else QueueAll();
+        }
+    }
+    private void OnExplorerPointer(ExplorerPointerEvent input)
+    {
+        if (_disposed || _stopping) return;
+        if (input.Phase == ExplorerPointerPhase.Pressed)
+        {
+            if (input.SelectionSnapshot is null) _host.Trace.Begin();
+            _explorerGesture.Begin(input.Point, input.Background); _selectionRead = null;
+            if (input.SelectionSnapshot is not null)
+                _selectionRead = CaptureSelectionAsync(input.SelectionSnapshot, _explorerGesture.Sequence);
+            else if (!input.Background && _icons is IDesktopSelectionReader reader)
+                _selectionRead = CaptureSelectionAsync(reader.ReadSelectionAsync(input.Point, _shutdown.Token), _explorerGesture.Sequence);
+        }
+        else if (input.Phase == ExplorerPointerPhase.DragStarted && _explorerGesture.StartDrag())
+        {
+            _host.Trace.Mark("DragStarted");
+            if (_selectionRead is null && _icons is IDesktopSelectionReader reader)
+                _selectionRead = CaptureSelectionAsync(reader.ReadSelectionAsync(_explorerGesture.PressPoint, _shutdown.Token), _explorerGesture.Sequence);
+        }
+        else if (input.Phase == ExplorerPointerPhase.Released)
+        {
+            _host.Trace.Mark("Gesture.release");
+            _explorerGesture.Release(input.Point, input.DesktopTarget); _releaseTimer.Start(); RequestObservation();
+        }
+        else if (input.Phase == ExplorerPointerPhase.Cancelled)
+        {
+            _explorerGesture.Cancel(); _selectionRead = null; _releaseTimer.Start();
+        }
+    }
+    private async Task CaptureSelectionAsync(Task<DesktopSelection> snapshot, long sequence)
+    {
+        try { _explorerGesture.Capture(sequence, await snapshot); }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { _logger.LogWarning(error, "Could not capture Explorer selection; this gesture will not reassign partial groups"); }
     }
     private void OnExplorerChanged()
     {
         if (_disposed || _moving || _applyingDrop || InteractionActive || _host.HasActiveInteraction) return;
-        if (_host.IsLeftButtonDown || _host.IsExplorerDragging) { _releaseTimer.Start(); return; }
+        if (ExplorerBusy()) { _releaseTimer.Start(); return; }
         RequestObservation();
     }
     private void OnReleaseTick(object? sender, EventArgs args)
     {
-        if (_host.IsLeftButtonDown || _host.IsExplorerDragging) return;
+        if (ExplorerBusy()) return;
         _releaseTimer.Stop(); RequestObservation();
     }
     private void RequestObservation()
     {
-        if (_disposed) return;
+        if (_disposed || _stopping) return;
         _requested = true;
         if (_reading || _moving || _scheduled) return;
         _scheduled = true;
@@ -75,11 +121,17 @@ public sealed class DesktopIconCoordinator : IDisposable
     }
     private async void OnTick(object? sender, EventArgs args)
     {
-        if (_disposed || _reading || _moving || InteractionActive || _host.HasActiveInteraction) return;
-        if (_host.IsLeftButtonDown || _host.IsExplorerDragging) { _releaseTimer.Start(); return; }
+        if (_disposed || _stopping || _reading || _moving || InteractionActive || _host.HasActiveInteraction) return;
+        if (ExplorerBusy()) { _releaseTimer.Start(); return; }
         _reading = true; _requested = false;
         try
         {
+            if (_selectionRead is not null) await _selectionRead;
+            if (Busy()) return;
+            _host.FinishNativeSelection();
+            if (_initialized && _positioningAvailable && Enabled && _host.PresentationConnected &&
+                _explorerGesture.Drop is { DesktopTarget: true } drop && DropAffectsFence(drop))
+            { await ReconcileDropAsync(drop); return; }
             var snapshot = await _icons.ReadAsync(_shutdown.Token);
             if (Busy()) return;
             SetStatus($"Desktop icons: {(snapshot.Connected ? snapshot.Icons.Count.ToString() : "Disconnected")}" +
@@ -91,46 +143,21 @@ public sealed class DesktopIconCoordinator : IDisposable
             var available = Enabled && _host.PresentationConnected && snapshot.CanPosition && snapshot.Error is null;
             if (!_initialized || available && !_positioningAvailable)
             {
-                _baseline = new(_matched, FenceIconLayout.IdentityComparer); _initialized = true; _positioningAvailable = available;
+                _initialized = true; _positioningAvailable = available;
                 if (available) { _monitors = _host.GetMonitorAreas(); QueueAll(); }
                 return;
             }
             _positioningAvailable = available;
-            if (!available) { _baseline = new(_matched, FenceIconLayout.IdentityComparer); return; }
-            var moved = Moved(snapshot);
-            if (moved.Count == 0) return;
-            // Read Explorer's final write after release, rather than accepting a transient enumeration.
-            await Task.Delay(16, _shutdown.Token);
-            var final = await _icons.ReadAsync(_shutdown.Token);
-            if (Busy() || !final.Connected || !final.CanPosition || final.Error is not null) return;
-            var settled = Moved(final);
-            if (!SameMoved(moved, settled)) { RequestObservation(); return; }
-            _matched = FenceIconLayout.Match(final.Icons);
-            var collapsed = _fences.Where(f => f.IsCollapsed).SelectMany(f => f.Icons).Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
-            var visibleMoved = settled.Where(i => !collapsed.Contains(i.StableId)).ToArray();
-            if (visibleMoved.Length == 0) { QueueAll(); return; }
-            var revision = _revision;
-            var changed = FenceIconLayout.ApplyMovedIcons(_fences, visibleMoved, Metrics, _host.GetScale);
-            var targets = IconPlacement.Targets(changed, _monitors, Metrics).Where(t => _matched.ContainsKey(t.StableId)).ToArray();
-            var rollback = targets.Select(t => new DesktopIconTarget(t.StableId, _matched[t.StableId].Position)).ToArray();
-            var recovery = IconPlacement.ReturnPositions(changed);
-            PrepareRecovery(recovery);
-            _applyingDrop = true;
-            try
-            {
-                _host.SetIconTargets(targets);
-                var positioned = await _transaction.ApplyAsync(targets, rollback,
-                    () => !Busy() && _revision == revision && (SameState(_fences, changed) || _commit(changed)), _shutdown.Token);
-                ApplySnapshot(positioned); _host.FlushDamage(); CompleteRecovery(recovery);
-                _logger.LogInformation("Desktop drop reconciled: ChangedIcons={Count}; PositionedIcons={Targets}; persisted after verified Shell layout", visibleMoved.Length, targets.Length);
-            }
-            finally { _applyingDrop = false; }
+            // Polling observes Explorer, but must never infer a partial drop from individual bounds.
+            ApplySnapshot(snapshot); CompleteGesture();
         }
         catch (OperationCanceledException) { }
         catch (Exception exception)
         {
+            _host.Trace.Mark("Reconciliation.failure");
             _logger.LogWarning(exception, "Desktop icon reconciliation failed; durable assignment was not advanced");
             SetStatus("Desktop icons: " + exception.Message); _initialized = false;
+            if (_explorerGesture.Phase == ExplorerGesturePhase.PostDropReconciliation) CompleteGesture();
         }
         finally
         {
@@ -139,12 +166,67 @@ public sealed class DesktopIconCoordinator : IDisposable
             else if (_requested) RequestObservation();
         }
     }
-    private bool Busy() => _disposed || InteractionActive || _host.HasActiveInteraction || _host.IsLeftButtonDown || _host.IsExplorerDragging;
-    private List<DesktopIcon> Moved(DesktopIconSnapshot snapshot) => snapshot.Icons.Where(i =>
-        !_baseline.TryGetValue(i.StableId, out var before) || Distance(before.Position, i.Position) > 1).ToList();
+    private bool DropAffectsFence(ExplorerDrop drop) => FenceIconLayout.DropTarget(_fences, drop.Point, _host.GetScale) is not null ||
+        _fences.SelectMany(f => f.Icons).Any(i => drop.DraggedIds.Contains(i.StableId, FenceIconLayout.IdentityComparer));
+    private async Task ReconcileDropAsync(ExplorerDrop drop)
+    {
+        var revision = _revision; var sequence = _explorerGesture.Sequence;
+        var source = _fences.ToArray(); var monitors = _monitors.ToArray();
+        var scales = source.ToDictionary(f => f.Id, _host.GetScale);
+        IReadOnlyList<Fence> changed = source;
+        IReadOnlyList<DesktopIconTarget> targets = [], recovery = [];
+        var beforeCounters = (_icons as IDesktopPositionDiagnostics)?.PositionCounters ?? default;
+        var beforePaints = _host.RepaintCount;
+        _applyingDrop = true;
+        try
+        {
+            using var paint = _host.SuppressExplorerPainting();
+            var positioned = await _transaction.ApplyPlannedAsync(
+                snapshot =>
+                {
+                    // Runs on the Shell worker before the redraw lease. Immutable inputs and pure
+                    // Core geometry only; no UI, host calls, recovery files or persistence here.
+                    changed = FenceIconLayout.ApplyGroupDrop(source, drop, snapshot.Icons, snapshot.Metrics, f => scales[f.Id]);
+                    targets = FenceIconLayout.ChangedTargets(IconPlacement.Targets(changed, monitors, snapshot.Metrics), snapshot.Icons);
+                    _host.Trace.Mark("Assignment/layout.proposal", drop.DraggedIds.Count);
+                    return targets;
+                },
+                async verified =>
+                {
+                    // Shell redraw has completed before any durable work or model feedback.
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    if (Busy() || _explorerGesture.Sequence != sequence || _revision != revision) return false;
+                    Metrics = verified.Metrics; _host.IconMetrics = Metrics;
+                    recovery = IconPlacement.ReturnPositions(changed); PrepareRecovery(recovery);
+                    _host.Trace.Mark("Persistence.begin");
+                    var accepted = SameState(_fences, changed) || _commit(changed);
+                    _host.Trace.Mark("Persistence.end"); return accepted;
+                }, _shutdown.Token);
+            ApplySnapshot(positioned); CompleteRecovery(recovery);
+            var counters = (_icons as IDesktopPositionDiagnostics)?.PositionCounters ?? default;
+            var target = FenceIconLayout.DropTarget(changed, drop.Point, f => scales[f.Id]);
+            _logger.LogInformation("Desktop drop reconciled: SelectedCount={Selected}; DraggedItemIdHash={Item}; TargetFence={Fence}; AssignedAfterDrop={Assigned}; MovedTargets={Targets}; BulkCalls={Batches}; ShellRedrawCompletions={Redraw}; ExtraRepaints={Paints}",
+                drop.DraggedIds.Count, IdentityHash(drop.DraggedItemId), target?.Id,
+                changed.SelectMany(f => f.Icons).Count(i => drop.DraggedIds.Contains(i.StableId, FenceIconLayout.IdentityComparer)),
+                targets.Count, counters.Batches - beforeCounters.Batches, counters.RedrawCompletions - beforeCounters.RedrawCompletions, _host.RepaintCount - beforePaints);
+            if (_explorerGesture.Sequence == sequence) CompleteGesture();
+        }
+        finally { _applyingDrop = false; }
+    }
+    private bool ExplorerBusy() => _explorerGesture.InProgress || _host.HasExplorerGesture || _host.IsLeftButtonDown || _host.IsExplorerDragging;
+    private bool ExplorerPositioningBusy() => _host.HasExplorerGesture ||
+        _explorerGesture.BlocksFencePresentation(InteractionActive || _host.HasActiveInteraction, _host.IsExplorerDragging);
+    private bool Busy() => _disposed || InteractionActive || _host.HasActiveInteraction || ExplorerBusy();
+    private void CompleteGesture()
+    {
+        _host.Trace.Complete(_explorerGesture.Drop is null ? "selection/click/cancel" : "drop");
+        _explorerGesture.Reset(); _selectionRead = null;
+        if (_layoutDeferred) { _layoutDeferred = false; QueueAll(); }
+    }
+    private static string IdentityHash(string identity) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity.ToUpperInvariant())))[..12];
     private void ApplySnapshot(DesktopIconSnapshot snapshot)
     {
-        _matched = FenceIconLayout.Match(snapshot.Icons); _baseline = new(_matched, FenceIconLayout.IdentityComparer);
+        _matched = FenceIconLayout.Match(snapshot.Icons);
         _host.SetIcons(snapshot.Icons); _host.EnsureStacking();
     }
     public void Preview(Fence fence, bool resize, double scale, Action? present = null)
@@ -190,6 +272,7 @@ public sealed class DesktopIconCoordinator : IDisposable
     private void QueueAll()
     {
         if (!Enabled || !_positioningAvailable || _disposed) return;
+        if (ExplorerPositioningBusy()) { _layoutDeferred = true; return; }
         try
         {
             LoadRecovery(); _monitors = _host.GetMonitorAreas();
@@ -197,7 +280,7 @@ public sealed class DesktopIconCoordinator : IDisposable
             var ids = targets.Select(t => t.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
             var orphaned = _recovery.Where(t => !ids.Contains(t.StableId)).ToArray();
             var batch = new MoveBatch(Math.Max(1, targets.Count + orphaned.Length)) { Recovery = IconPlacement.ReturnPositions(_fences), Verified = true };
-            foreach (var target in targets.Concat(orphaned)) if (_matched.ContainsKey(target.StableId)) batch.Add(target);
+            foreach (var target in FenceIconLayout.ChangedTargets(targets.Concat(orphaned).ToArray(), _matched.Values.ToArray())) batch.Add(target);
             Enqueue(batch);
         }
         catch (Exception error) { _logger.LogWarning(error, "Could not prepare desktop icon restoration"); SetStatus("Desktop icons: " + error.Message); }
@@ -235,6 +318,7 @@ public sealed class DesktopIconCoordinator : IDisposable
         {
             while (_pending is not null && !_disposed)
             {
+                if (ExplorerPositioningBusy()) { _releaseTimer.Start(); return; }
                 var batch = _pending; _pending = null;
                 try
                 {
@@ -255,7 +339,7 @@ public sealed class DesktopIconCoordinator : IDisposable
                             if (!_matched.TryGetValue(target.StableId, out var old)) continue;
                             var deltaX = target.Position.X - old.Position.X; var deltaY = target.Position.Y - old.Position.Y;
                             var updated = old with { Position = target.Position, Bounds = old.Bounds with { X = old.Bounds.X + deltaX, Y = old.Bounds.Y + deltaY } };
-                            _matched[target.StableId] = updated; _baseline[target.StableId] = updated;
+                            _matched[target.StableId] = updated;
                         }
                         _host.SetIcons(_matched.Values.ToArray()); _host.EnsureStacking();
                     }
@@ -280,9 +364,6 @@ public sealed class DesktopIconCoordinator : IDisposable
         }
         finally { _moving = false; if (_pending is null) _idle?.TrySetResult(); if (_requested) RequestObservation(); }
     }
-    private static double Distance(DesktopPoint a, DesktopPoint b) => Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y);
-    private static bool SameMoved(IReadOnlyList<DesktopIcon> left, IReadOnlyList<DesktopIcon> right) => left.Count == right.Count &&
-        left.All(a => right.Any(b => FenceIconLayout.IdentityComparer.Equals(a.StableId, b.StableId) && Distance(a.Position, b.Position) <= 1));
     private static bool SameState(IReadOnlyList<Fence> left, IReadOnlyList<Fence> right)
     {
         if (left.Count != right.Count) return false;
@@ -295,10 +376,47 @@ public sealed class DesktopIconCoordinator : IDisposable
         return true;
     }
     private void SetStatus(string status) { if (status == Status) return; Status = status; StatusChanged?.Invoke(this, EventArgs.Empty); }
+    public async Task PrepareExitAsync()
+    {
+        var started = Stopwatch.GetTimestamp();
+        while (_reading || _moving || _pending is not null || _scheduled || ExplorerBusy())
+        {
+            if (Stopwatch.GetElapsedTime(started) > TimeSpan.FromSeconds(10))
+                throw new InvalidOperationException("Дождитесь завершения перемещения значков и повторите выход.");
+            await Task.Delay(20);
+        }
+        _stopping = true; _timer.Stop(); _releaseTimer.Stop();
+        try
+        {
+            LoadRecovery();
+            var returns = _recovery.Concat(IconPlacement.ReturnPositions(_fences))
+                .GroupBy(t => t.StableId, FenceIconLayout.IdentityComparer).Select(g => g.Last()).ToArray();
+            if (returns.Length == 0) return;
+            var snapshot = await _icons.ReadAsync();
+            if (!snapshot.Connected)
+            {
+                // Explorer is absent: keep the return journal for the next healthy session.
+                _logger.LogWarning("Explorer unavailable on exit; icon return journal retained");
+                return;
+            }
+            var presentIds = snapshot.Icons.Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
+            var targets = FenceIconLayout.ChangedTargets(returns.Where(t => presentIds.Contains(t.StableId)).ToArray(), snapshot.Icons);
+            var current = FenceIconLayout.Match(snapshot.Icons);
+            var rollback = targets.Select(t => new DesktopIconTarget(t.StableId, current[t.StableId].Position)).ToArray();
+            await _transaction.ApplyAsync(targets, rollback, () => { WriteRecovery([]); return true; });
+            _logger.LogInformation("Graceful exit restored {Count} desktop icon positions", targets.Count);
+        }
+        catch
+        {
+            _stopping = false; _timer.Start(); RequestObservation();
+            throw;
+        }
+    }
     public void Dispose()
     {
         if (_disposed) return; _disposed = true;
         _host.IconPositionsChanged -= OnExplorerChanged;
+        _host.ExplorerPointer -= OnExplorerPointer;
         _timer.Stop(); _timer.Tick -= OnTick; _releaseTimer.Stop(); _releaseTimer.Tick -= OnReleaseTick;
         _shutdown.Cancel(); _pending?.Completion?.TrySetCanceled(); _pending?.Dispose(); _pending = null;
         _shutdown.Dispose();

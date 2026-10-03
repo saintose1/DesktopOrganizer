@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace DesktopOrganizer.Infrastructure.Interop;
 
 [SupportedOSPlatform("windows")]
-public sealed class DesktopIconService : IDesktopIconService, IDisposable
+public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionReader, IDesktopDropPositioner, IDesktopDropReconciler, IDesktopPositionDiagnostics, IDisposable
 {
     private readonly NativeStaWorker _worker;
     private readonly DesktopDiscovery _discovery;
@@ -14,9 +14,12 @@ public sealed class DesktopIconService : IDesktopIconService, IDisposable
     private Session? _session;
     private string? _lastError;
     private bool _disposed;
-    public DesktopIconService(ILogger<DesktopIconService> logger, ILogger<DesktopDiscovery> discoveryLogger)
+    private long _positionBatches, _redrawCompletions;
+    private readonly ExplorerInteractionTrace? _trace;
+    public DesktopPositionCounters PositionCounters => new(Interlocked.Read(ref _positionBatches), Interlocked.Read(ref _redrawCompletions));
+    public DesktopIconService(ILogger<DesktopIconService> logger, ILogger<DesktopDiscovery> discoveryLogger, ExplorerInteractionTrace? interactionTrace = null)
     {
-        _logger = logger; _discovery = new(discoveryLogger);
+        _logger = logger; _discovery = new(discoveryLogger); _trace = interactionTrace;
         _worker = new NativeStaWorker(() => { _session?.Dispose(); _session = null; });
     }
     public Task<DesktopIconSnapshot> ReadAsync(CancellationToken cancellationToken = default) => _worker.Run(() =>
@@ -48,13 +51,23 @@ public sealed class DesktopIconService : IDesktopIconService, IDisposable
         // Coalescing happens in the coordinator; there is never a queue of hundreds of move jobs.
         return _worker.Run(() => { GetSession().Position(targets, cancellationToken); return true; }, cancellationToken);
     }
+    public Task<DesktopSelection> ReadSelectionAsync(DesktopPoint pressPoint, CancellationToken cancellationToken = default) =>
+        _worker.Run(() => GetSession().Selection(pressPoint, cancellationToken), cancellationToken);
+    public Task PositionDropAsync(IReadOnlyList<DesktopIconTarget> targets, CancellationToken cancellationToken = default) =>
+        _worker.Run(() => { GetSession().Position(targets, cancellationToken, deferRedraw: true); return true; }, cancellationToken);
+    public Task ReconcileDropAsync(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout, CancellationToken cancellationToken = default) =>
+        _worker.Run(() => { GetSession().ReconcileDrop(layout, cancellationToken); return true; }, cancellationToken);
+    /// <summary>Diagnostic of the documented redraw lease only; never moves an item or synthesizes input.</summary>
+    public Task<IReadOnlyList<string>> ProbeRedrawVisibilityAsync() => _worker.Run<IReadOnlyList<string>>(() => GetSession().ProbeRedrawVisibility());
+    /// <summary>Checks real Shell selection enumeration; restores the original selected indices in finally.</summary>
+    public Task<string> ProbeSelectionEnumerationAsync() => _worker.Run(() => GetSession().ProbeSelectionEnumeration());
     private Session GetSession()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_session is not null && _discovery.Validate(_session.Handles)) return _session;
         _session?.Dispose(); _session = null;
         var handles = _discovery.Find() ?? throw new InvalidOperationException("Validated desktop icon ListView unavailable.");
-        _session = new Session(handles, _logger);
+        _session = new Session(handles, _logger, () => Interlocked.Increment(ref _positionBatches), () => Interlocked.Increment(ref _redrawCompletions), _trace);
         return _session;
     }
     public void Dispose() { if (_disposed) return; _disposed = true; _worker.Dispose(); }
@@ -67,7 +80,128 @@ public sealed class DesktopIconService : IDesktopIconService, IDisposable
         private readonly Dictionary<string, nint> _pidls = new(FenceIconLayout.IdentityComparer);
         private DesktopCoordinates _coordinates;
         private bool _restoreGrid;
-        public Session(DesktopHandles handles, ILogger logger) { Handles = handles; _logger = logger; _shell = new(handles); }
+        private readonly Action _positioned, _redrawn;
+        private readonly ExplorerInteractionTrace? _trace;
+        public Session(DesktopHandles handles, ILogger logger, Action positioned, Action redrawn, ExplorerInteractionTrace? trace)
+        { Handles = handles; _logger = logger; _shell = new(handles); _positioned = positioned; _redrawn = redrawn; _trace = trace; }
+        public DesktopSelection Selection(DesktopPoint pressPoint, CancellationToken cancellationToken)
+        {
+            _trace?.Mark("SelectedSet.read.begin");
+            using var dpi = new DesktopDpiScope(NativeMethods.GetWindowDpiAwarenessContext(Handles.Host));
+            using var memory = new RemoteListViewBuffer(Handles.ProcessId, _logger);
+            var origin = new NativeMethods.Point();
+            if (!NativeMethods.ClientToScreen(Handles.IconList, ref origin)) throw new InvalidOperationException("Cannot read desktop coordinate origin.");
+            var viewOrigin = SendMessage(Handles.IconList, 0x1029, 0, memory.Address(0)) != 0 ? memory.Read<NativeMethods.Point>(0) : new();
+            _coordinates = new(new(origin.X, origin.Y), new(viewOrigin.X, viewOrigin.Y));
+            var point = new NativeMethods.Point((int)Math.Round(pressPoint.X), (int)Math.Round(pressPoint.Y));
+            if (!NativeMethods.ScreenToClient(Handles.IconList, ref point)) throw new InvalidOperationException("Cannot map desktop press.");
+            memory.Write(0, new HitTestInfo { Point = point });
+            var hit = (int)SendMessage(Handles.IconList, 0x1012, 0, memory.Address(0)); // LVM_HITTEST, read only.
+            // Explorer's GetSelectedItem cursor skips adjacent selected indices with the former
+            // index+1 walk. GetSelection returns the complete Shell-owned selection as one array.
+            var selected = SelectedIdentities(cancellationToken);
+            var initial = new List<DesktopIconTarget>();
+            var selectedSet = selected.ToHashSet(FenceIconLayout.IdentityComparer);
+            var count = (int)SendMessage(Handles.IconList, 0x1004, 0, 0);
+            if (count is < 0 or > 100000) throw new InvalidOperationException("Invalid desktop item count.");
+            for (var index = 0; index < count && initial.Count < selectedSet.Count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var id = Identity(index);
+                if (selectedSet.Contains(id)) initial.Add(new(id, InitialPosition(index)));
+            }
+            var hitId = hit >= 0 ? Identity(hit) : null;
+            if (hitId is not null && !selected.Contains(hitId, FenceIconLayout.IdentityComparer)) initial.Add(new(hitId, InitialPosition(hit)));
+            _trace?.Mark("SelectedSet.read.end", selected.Count);
+            return new(selected, hitId) { InitialPositions = initial };
+        }
+        private IReadOnlyList<string> SelectedIdentities(CancellationToken cancellationToken)
+        {
+            var result = _shell.View.GetSelection(false, out var selection);
+            // With noneImpliesFolder=false Explorer returns HRESULT_FROM_WIN32(ERROR_NOT_FOUND)
+            // for an empty selection. This is an ordinary background click, not a read failure.
+            if (result == unchecked((int)0x80070490))
+            {
+                if (selection is not null) Marshal.ReleaseComObject(selection);
+                return [];
+            }
+            Marshal.ThrowExceptionForHR(result);
+            if (selection is null) return [];
+            try
+            {
+                Marshal.ThrowExceptionForHR(selection.GetCount(out var count));
+                if (count > 100000) throw new InvalidOperationException("Invalid Shell selection count.");
+                var ids = new List<string>((int)count);
+                for (uint i = 0; i < count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    Marshal.ThrowExceptionForHR(selection.GetItemAt(i, out var item));
+                    try
+                    {
+                        Marshal.ThrowExceptionForHR(item.GetDisplayName(0x80028000, out var name));
+                        try { ids.Add(Marshal.PtrToStringUni(name) ?? throw new InvalidOperationException("Empty selected item identity.")); }
+                        finally { Marshal.FreeCoTaskMem(name); }
+                    }
+                    finally { Marshal.ReleaseComObject(item); }
+                }
+                return ids.Distinct(FenceIconLayout.IdentityComparer).ToArray();
+            }
+            finally { Marshal.ReleaseComObject(selection); }
+        }
+        public string ProbeSelectionEnumeration()
+        {
+            var count = (int)SendMessage(Handles.IconList, 0x1004, 0, 0);
+            if (count < 6) throw new InvalidOperationException("Six desktop items required for the selection probe.");
+            var original = new List<int>();
+            Marshal.ThrowExceptionForHR(_shell.View.GetFocusedItem(out var focus));
+            for (var i = 0; i < count; i++)
+                if ((SendMessage(Handles.IconList, 0x102C, i, 2) & 2) != 0) original.Add(i); // LVM_GETITEMSTATE
+            try
+            {
+                for (var i = 0; i < 4; i++) Marshal.ThrowExceptionForHR(_shell.View.SelectItem(i, i == 0 ? 5u : 1u));
+                var actual = Enumerable.Range(0, count).Where(i => (SendMessage(Handles.IconList, 0x102C, i, 2) & 2) != 0).ToArray();
+                var walked = new List<int>();
+                var start = 0;
+                while (_shell.View.GetSelectedItem(start, out var index) == 0)
+                {
+                    walked.Add(index); start = index + 1;
+                    if (walked.Count > count) throw new InvalidOperationException("Invalid selected index walk.");
+                }
+                var full = SelectedIdentities(CancellationToken.None);
+                var expected = actual.Select(Identity).ToHashSet(FenceIconLayout.IdentityComparer);
+                if (!expected.SetEquals(full)) throw new InvalidOperationException("Shell selection snapshot omitted selected items.");
+                var first = Read(CancellationToken.None).Icons.Single(i => i.Index == 0);
+                var captured = Selection(new(first.Bounds.X + first.Bounds.Width / 2, first.Bounds.Y + 10), CancellationToken.None);
+                if (!expected.SetEquals(captured.SelectedIds) || captured.InitialPositions.Count != 4 ||
+                    captured.DraggedItemId is null || !expected.Contains(captured.DraggedItemId))
+                    throw new InvalidOperationException("Press snapshot lost selected items, anchor or initial positions.");
+                Marshal.ThrowExceptionForHR(_shell.View.SelectItem(-1, 4));
+                if (SelectedIdentities(CancellationToken.None).Count != 0) throw new InvalidOperationException("Empty selection snapshot was not empty.");
+                return $"Selected indices=[{string.Join(',', actual)}]; old GetSelectedItem walk=[{string.Join(',', walked)}]; GetSelection snapshot={full.Count}; press snapshot={captured.SelectedIds.Count}; initial positions={captured.InitialPositions.Count}; empty selection=0; PASS";
+            }
+            finally
+            {
+                Marshal.ThrowExceptionForHR(_shell.View.SelectItem(-1, 4));
+                foreach (var index in original) Marshal.ThrowExceptionForHR(_shell.View.SelectItem(index, 1));
+                if (focus >= 0) Marshal.ThrowExceptionForHR(_shell.View.SelectItem(focus, 0x10));
+            }
+        }
+        private DesktopPoint InitialPosition(int index)
+        {
+            Marshal.ThrowExceptionForHR(_shell.View.Item(index, out var pidl));
+            try
+            {
+                Marshal.ThrowExceptionForHR(_shell.View.GetItemPosition(pidl, out var position));
+                return _coordinates.ToScreen(new(position.X, position.Y));
+            }
+            finally { if (pidl != 0) Marshal.FreeCoTaskMem(pidl); }
+        }
+        private string Identity(int index)
+        {
+            Marshal.ThrowExceptionForHR(_shell.View.Item(index, out var pidl));
+            try { return ShellFolderView.Name(pidl, 0x80028000); }
+            finally { if (pidl != 0) Marshal.FreeCoTaskMem(pidl); }
+        }
         public DesktopIconSnapshot Read(CancellationToken cancellationToken)
         {
             using var dpi = new DesktopDpiScope(NativeMethods.GetWindowDpiAwarenessContext(Handles.Host));
@@ -138,7 +272,37 @@ public sealed class DesktopIconService : IDesktopIconService, IDisposable
             }
             finally { foreach (var pidl in newPidls.Values) Marshal.FreeCoTaskMem(pidl); }
         }
-        public void Position(IReadOnlyList<DesktopIconTarget> targets, CancellationToken cancellationToken)
+        public void ReconcileDrop(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout, CancellationToken cancellationToken)
+        {
+            RequireCompletedGesture();
+            // Enumerate and compute the full proposal before freezing. Most drop-out
+            // operations only change assignment and already have final Explorer
+            // positions. They must not toggle redraw at all.
+            var snapshot = Read(cancellationToken);
+            if (!snapshot.Connected || !snapshot.CanPosition || snapshot.Error is not null)
+                throw new InvalidOperationException("Explorer drop snapshot is unavailable.");
+            var targets = layout(snapshot);
+            if (targets.Count == 0) { _trace?.Mark("Drop.noPosition/noRedraw"); return; }
+            cancellationToken.ThrowIfCancellationRequested();
+            RequireCompletedGesture();
+            // Position prepares PIDLs/grid before the short false -> bulk -> true lease.
+            Position(targets, cancellationToken, deferRedraw: true);
+        }
+        private void RequireCompletedGesture()
+        {
+            var info = new NativeMethods.GuiThreadInfo { Size = (uint)Marshal.SizeOf<NativeMethods.GuiThreadInfo>() };
+            var thread = NativeMethods.GetWindowThreadProcessId(Handles.IconList, out _);
+            if ((NativeMethods.GetAsyncKeyState(1) & 0x8000) != 0 || !NativeMethods.GetGUIThreadInfo(thread, ref info) || info.Capture != 0)
+                throw new InvalidOperationException("Explorer gesture must finish before drop reconciliation.");
+        }
+        private void SetRedraw(bool enabled)
+        {
+            _trace?.Mark(enabled ? "SetRedraw(true).begin" : "SetRedraw(false).begin");
+            Marshal.ThrowExceptionForHR(_shell.View.SetRedraw(enabled));
+            if (enabled) _redrawn();
+            _trace?.Mark(enabled ? "SetRedraw(true).end/visible" : "SetRedraw(false).end/visible", NativeMethods.IsWindowVisible(Handles.IconList) ? 1 : -1);
+        }
+        public void Position(IReadOnlyList<DesktopIconTarget> targets, CancellationToken cancellationToken, bool deferRedraw = false, bool completeRedraw = true)
         {
             if (_shell.View.GetAutoArrange() != 1) throw new InvalidOperationException("Explorer auto-arrange prevents positioning desktop icons.");
             using var dpi = new DesktopDpiScope(NativeMethods.GetWindowDpiAwarenessContext(Handles.Host));
@@ -162,13 +326,37 @@ public sealed class DesktopIconService : IDesktopIconService, IDisposable
                 _logger.LogInformation("Explorer snap-to-grid temporarily disabled for exact Fence positioning; restored when the icon session closes");
             }
             // Preserve focus/selection, and let Shell persist the genuine icon positions.
-            var result = _shell.View.SelectAndPositionItems((uint)pidls.Count, pidls.ToArray(), positions.ToArray(), 0x80000080);
-            Marshal.ThrowExceptionForHR(result);
-            if (result != 0) throw new InvalidOperationException("Shell did not accept desktop icon positions.");
+            // Only the short post-drop bulk operation is suspended, never mouse/OLE input, enumeration or disk I/O.
+            try
+            {
+                if (deferRedraw) SetRedraw(false);
+                _trace?.Mark("SelectAndPositionItems.begin", pidls.Count);
+                var result = _shell.View.SelectAndPositionItems((uint)pidls.Count, pidls.ToArray(), positions.ToArray(), 0x80000080);
+                _positioned();
+                _trace?.Mark("SelectAndPositionItems.end");
+                Marshal.ThrowExceptionForHR(result);
+                if (result != 0) throw new InvalidOperationException("Shell did not accept desktop icon positions.");
+            }
+            finally
+            {
+                if (completeRedraw) SetRedraw(true);
+            }
             // This Explorer can retain the previous rendered positions after a successful
             // SelectAndPositionItems, even while GetItemPosition reports the new coordinates.
             // Complete the documented Shell redraw path before acknowledging the visual move.
-            Marshal.ThrowExceptionForHR(_shell.View.SetRedraw(true));
+        }
+        public IReadOnlyList<string> ProbeRedrawVisibility()
+        {
+            var info = new NativeMethods.GuiThreadInfo { Size = (uint)Marshal.SizeOf<NativeMethods.GuiThreadInfo>() };
+            var thread = NativeMethods.GetWindowThreadProcessId(Handles.IconList, out _);
+            if ((NativeMethods.GetAsyncKeyState(1) & 0x8000) != 0 || !NativeMethods.GetGUIThreadInfo(thread, ref info) || info.Capture != 0)
+                throw new InvalidOperationException("Wait for the actual Explorer gesture to finish before the diagnostic.");
+            var states = new List<string>();
+            string State(string label) => label + $": visible={NativeMethods.IsWindowVisible(Handles.IconList)}; style=0x{NativeMethods.GetWindowStyle(Handles.IconList, -16):X}; ex=0x{NativeMethods.GetWindowStyle(Handles.IconList, -20):X}";
+            states.Add(State("Before"));
+            try { Marshal.ThrowExceptionForHR(_shell.View.SetRedraw(false)); states.Add(State("SetRedraw(false)")); }
+            finally { Marshal.ThrowExceptionForHR(_shell.View.SetRedraw(true)); states.Add(State("SetRedraw(true)")); }
+            return states;
         }
         public void Dispose()
         {
@@ -189,4 +377,6 @@ public sealed class DesktopIconService : IDesktopIconService, IDisposable
         public int TextLength, Image; public nint Parameter; public int Indent, GroupId; public uint Columns;
         public nint ColumnArray, ColumnFormats; public int Group;
     }
+    [StructLayout(LayoutKind.Sequential)] private struct HitTestInfo
+    { public NativeMethods.Point Point; public uint Flags; public int Item, SubItem, Group; }
 }

@@ -1,5 +1,15 @@
 # Roadmap
 
+## Трей перед редизайном UI
+
+- [x] Постоянный native notification icon, один клик для существующего MainWindow.
+- [x] Крестик скрывает окно; desktop integration продолжает работать.
+- [x] Native menu «Открыть DesktopOrganizer» / «Выход».
+- [x] Graceful exit: завершение операций, возврат parked icons, освобождение Explorer properties.
+- [x] Unit tests lifetime; manual checklist в docs/MILESTONE-TRAY.md.
+- [x] Подготовлено проверенное состояние для stable commit и tag `pre-ui-redesign-stable`.
+- [ ] Редизайн UI по референсам — следующий отдельный этап.
+
 ## Этап 1 — Каркас
 
 - [x] Solution и проекты Core, Infrastructure, App.
@@ -95,9 +105,52 @@
 
 ## Этап 8 — Подготовка к выпуску
 
+Текущий stabilization: docs/STABILIZATION-EXPLORER-GESTURES.md.
+
+- [x] Explicit Explorer gesture state; captured actual Shell selected set и общий group drop target.
+- [x] Multi-drag in/out: весь dragged set, один affected layout proposal и commit.
+- [x] Shared pre-DOWN selected set/initial positions; Shell hit-test различает пустой desktop и прозрачное место внутри icon.
+- [x] Стабильный ListView backing во время marquee; без Fence свойства не меняются.
+- [ ] Подтвердить native marquee pixels физическим жестом: A/B 0–6; новый основной режим — native outline.
+- [x] Final read/layout/bulk внутри короткой STA redraw lease; readback/journal/save после redraw.
+- [x] Удалены per-item fallback и повторные bulk writes при успешном post-drop; timestamps включают composition repaint.
+- [x] Native lease/property и five-item positioning probes с восстановлением.
+- [x] Обычный пустой desktop click не переключает composition; marquee guard только после drag threshold.
+- [x] Selective NOREDRAW Z-order batch; immediate reorder correction, без повторной foreground activation.
+  Native probe: 8 ListView raises / 2 Fence, 0 extra repaint/bitmap presents; обычный click подтверждён пользователем.
+- [x] Пользователь подтвердил: обычный пустой desktop click больше не вызывает мигание.
+- [x] Убрано переключение wallpaper/color-key backing при marquee в основной сборке.
+  Native outline активен на период background selection; 0 наших composition redraw.
+  Tradeoff — отсутствие полупрозрачной заливки selection rectangle.
+- [x] Property probe: меняется только double-buffering bit; repeat/cancel/disable/shutdown restore.
+- [x] API regression нового режима: empty/10 icons, drag/resize/collapse/restart;
+  все 54 позиции и исходные свойства восстановлены. Debug/Release: 0 warnings/errors, 206 tests.
+- [x] Пользователь подтвердил: marquee больше не мигает при постоянном outline.
+- [x] Исправлена регрессия icon drag от постоянного отключения двойной буферизации:
+  buffer включён для icon/OLE/positioning; scoped outline готовится до native DOWN.
+- [x] No-op/assignment-only drop: 0 bulk, 0 redraw; изменяемый layout — 1 bulk/1 redraw.
+  Freeze только на positioning, без enumeration/layout. Реальный probe ~4,7 ms.
+- [x] Debug/Release 0 warnings/errors; 207 tests. API smoke: assignment/grid,
+  drag/resize/collapse/restart/drop-out; все 54 исходные позиции восстановлены.
+- [ ] Physical acceptance новой сборки: marquee без регрессии, single/multi icon
+  drag desktop/Fence in/out без видимого flash, обычные клики.
+- [x] GetSelection/IShellItemArray вместо пропускающего items обхода GetSelectedItem;
+  реальный probe: 0,1,2,3 → полный set из 4, anchor и initial positions, пустой set без ошибки.
+- [x] Regression: узкий Fence принимает 6 spread-out items целиком, высота растёт для всех rows; общий drop out.
+- [x] Debug/Release: 0 warnings/errors; 206 tests в каждой конфигурации.
+- [x] Actual API rendering regression: empty/10 icons, drag/resize/collapse/restart;
+  полный snapshot 54 icons и original properties восстановлены после проверки.
+- [ ] Manual acceptance: native marquee pixels, group OLE in/out, blink, double click,
+  collapse/restart и быстрые реальные Fence gestures. Milestone не закрыт до подтверждения
+  сценариев A–D реальной мышью. API replay не считается этим acceptance.
+
 Текущее точечное исправление input: docs/FIX-EXPLORER-SELECTION.md.
-Native hit-test диагностика и 158 unit tests проходят; физическую Explorer
-рамку выделения и перенос нескольких icons необходимо подтвердить вручную.
+Повторное исправление: async Raw Input handoff заменён узким WH_MOUSE_LL router,
+с маршрутизацией только пропущенного DOWN до DefView. После сообщения пользователя
+о застывании курсора удалено подавление WM_MOUSEMOVE/UP; captured Explorer получает
+настоящие события. Debug/Release build без warnings/errors, 174 unit tests и
+headless native hook lifecycle проходят. Отдельная GUI-копия и реальная surface
+проверены; Explorer рамка выделения и multiple-icon drag проверяются пользователем.
 
 - [ ] Добавить интеграционные проверки и диагностику.
 - [ ] Проверить производительность и доступность UI.

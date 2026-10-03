@@ -157,10 +157,14 @@ internal static class RenderingSmoke
         finally
         {
             desktop.Dispose(); native.Dispose(); window.Close();
-            await reader.PositionAsync(probes.Select(i => new DesktopIconTarget(i.StableId, i.Position)).ToArray());
-            if (!IconPlacement.AtTargets(await reader.ReadAsync(), probes.Select(i => new DesktopIconTarget(i.StableId, i.Position)).ToArray()))
+            // Explorer can displace neighbours when probes cross occupied cells. Restore the whole snapshot.
+            var originalTargets = initial.Icons.Select(i => new DesktopIconTarget(i.StableId, i.Position)).ToArray();
+            await reader.PositionAsync(originalTargets);
+            reader.Dispose(); // Verify after the session restores the original Explorer grid flags.
+            using var verifier = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
+            if (!IconPlacement.AtTargets(await verifier.ReadAsync(), originalTargets))
                 throw new InvalidOperationException("Original positions not restored.");
-            Console.WriteLine("PASS: all ten original shortcut positions restored");
+            Console.WriteLine($"PASS: all {originalTargets.Length} original desktop item positions restored after grid restoration");
         }
         async Task WaitPositions(Fence fence)
         {

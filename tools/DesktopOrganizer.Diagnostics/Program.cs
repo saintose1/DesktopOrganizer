@@ -7,11 +7,98 @@ using DesktopOrganizer.Core.Desktop;
 using DesktopOrganizer.Infrastructure.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using DesktopOrganizer.Core.Models;
+using Microsoft.Extensions.Logging;
 
 var discovery = new DesktopDiscovery(NullLogger<DesktopDiscovery>.Instance);
+if (args.Length == 2 && args[0] is "--tray-state" or "--tray-open" or "--tray-exit" or "--tray-menu")
+{
+    Console.WriteLine(DesktopDiagnostics.TrayState(uint.Parse(args[1]), open: args[0] == "--tray-open", exit: args[0] == "--tray-exit", menu: args[0] == "--tray-menu"));
+    return 0;
+}
 var desktop = discovery.Find();
 if (desktop is null) { Console.Error.WriteLine("No validated Explorer desktop host. " + discovery.LastDiagnostics); return 1; }
 Console.WriteLine(desktop);
+if (args.Length == 1 && args[0] == "--redraw-visibility")
+{
+    using var icons = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
+    foreach (var state in await icons.ProbeRedrawVisibilityAsync()) Console.WriteLine(state);
+    return 0;
+}
+if (args.Length == 1 && args[0] == "--composition-lease")
+{
+    foreach (var state in DesktopDiagnostics.CheckMarqueeCompositionLease()) Console.WriteLine(state);
+    Console.WriteLine("PASS: real Explorer composition lease roundtrip; no mouse/marquee/OLE gesture replayed.");
+    return 0;
+}
+if (args.Length == 1 && args[0] == "--presentation-state")
+{
+    Console.WriteLine(DesktopDiagnostics.CompositionState(desktop)); return 0;
+}
+if (args.Length == 3 && args[0] == "--selection-at")
+{
+    using var icons = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
+    var selection = await icons.ReadSelectionAsync(new(double.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture),
+        double.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture)));
+    Console.WriteLine(JsonSerializer.Serialize(new { SelectedCount = selection.SelectedIds.Count, HitItem = selection.DraggedItemId is not null }));
+    return 0;
+}
+if (args.Length == 1 && args[0] == "--drop-batch-roundtrip")
+{
+    if (DesktopDiagnostics.Inspect(desktop).Count != 0) throw new InvalidOperationException("Close DesktopOrganizer before the reversible icon batch probe.");
+    var trace = new ExplorerInteractionTrace(new DiagnosticTraceLogger());
+    using var icons = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance, trace);
+    var snapshot = await icons.ReadAsync();
+    if (!snapshot.CanPosition || snapshot.Error is not null) throw new InvalidOperationException("Positioning unavailable.");
+    var source = snapshot.Icons.Where(i => i.Position.X >= 0 && i.Position.Y >= 0).Take(5).ToArray();
+    if (source.Length != 5) throw new InvalidOperationException("Five visible actual items are required.");
+    var original = snapshot.Icons.Select(i => new DesktopIconTarget(i.StableId, i.Position)).ToArray();
+    var targets = source.Select((i, n) => new DesktopIconTarget(i.StableId, new(1900 + n % 3 * snapshot.Metrics.StepX, 900 + n / 3 * snapshot.Metrics.StepY))).ToArray();
+    try
+    {
+        var before = icons.PositionCounters;
+        trace.Begin();
+        await icons.ReconcileDropAsync(_ => []);
+        var noOp = icons.PositionCounters;
+        if (noOp != before || trace.Snapshot.Any(p => p.Stage.StartsWith("SetRedraw", StringComparison.Ordinal)))
+            throw new InvalidOperationException("An assignment-only/no-op drop acquired a redraw lease.");
+        trace.Complete("PASS: actual empty native plan; 0 bulk / 0 redraw");
+        trace.Begin();
+        await icons.ReconcileDropAsync(final =>
+        {
+            trace.Mark("Layout.compute", source.Length);
+            return FenceIconLayout.ChangedTargets(targets, final.Icons);
+        });
+        if (!IconPlacement.AtTargets(await icons.ReadAsync(), targets)) throw new InvalidOperationException("Actual Shell batch did not retain its positions.");
+        var after = icons.PositionCounters;
+        Console.WriteLine($"Five real items: BulkCalls={after.Batches-before.Batches}; RedrawCompletions={after.RedrawCompletions-before.RedrawCompletions}");
+        if (after.Batches-before.Batches != 1 || after.RedrawCompletions-before.RedrawCompletions != 1) throw new InvalidOperationException("More than one visual batch.");
+        trace.Complete("actual Shell API reconciliation; no physical mouse/OLE gesture");
+    }
+    finally
+    {
+        await icons.PositionDropAsync(original);
+        icons.Dispose();
+        using var verifier = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
+        if (!IconPlacement.AtTargets(await verifier.ReadAsync(), original)) throw new InvalidOperationException("Original icon positions were not restored.");
+    }
+    Console.WriteLine("PASS: real Shell bulk positioning + original positions restored. Native mouse/OLE drag was not tested.");
+    return 0;
+}
+if (args.Length == 1 && args[0] == "--input-state")
+{
+    Console.WriteLine(JsonSerializer.Serialize(DesktopDiagnostics.InputState(desktop)));
+    Console.WriteLine(JsonSerializer.Serialize(DesktopDiagnostics.MonitorAreas()));
+    return 0;
+}
+if (args.Length == 2 && args[0] == "--snapshot-positions")
+{
+    using var icons = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
+    var snapshot = await icons.ReadAsync();
+    if (!snapshot.Connected) throw new InvalidOperationException("No connected desktop icon reader.");
+    File.WriteAllText(args[1], JsonSerializer.Serialize(snapshot.Icons.Select(i => new DesktopIconTarget(i.StableId, i.Position))));
+    Console.WriteLine($"Saved {snapshot.Icons.Count} actual icon positions without moving icons.");
+    return 0;
+}
 if (args.Length == 2 && args[0] == "--motion-capture")
 {
     Directory.CreateDirectory(args[1]);
@@ -150,3 +237,11 @@ if (args.Length == 2 && args[0] == "--capture-directory")
     }
 }
 return 0;
+
+internal sealed class DiagnosticTraceLogger : ILogger<ExplorerInteractionTrace>
+{
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel logLevel) => true;
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+        Func<TState, Exception?, string> formatter) => Console.WriteLine(formatter(state, exception));
+}

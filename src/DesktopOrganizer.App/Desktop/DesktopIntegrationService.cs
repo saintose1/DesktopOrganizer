@@ -76,7 +76,7 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         StateChangeRequested?.Invoke(this, request);
         return request.Accepted;
     }
-    private void OnTick(object? sender, EventArgs args) { if (!_host.HasActiveInteraction) Reconcile(); }
+    private void OnTick(object? sender, EventArgs args) { if (!_host.HasActiveInteraction && !_host.HasExplorerGesture && !_host.IsExplorerDragging && !_host.IsNativeSelection) Reconcile(); }
     private void OnIconStatusChanged(object? sender, EventArgs args) => Publish(Connection with { IconStatus = _icons?.Status ?? "" });
     private void OnVisualChanged(Guid id)
     {
@@ -220,6 +220,12 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         var state = (fence, layout.Value, scale, hover);
         var exists = _rendered.TryGetValue(fence.Id, out var previous);
         if (exists && previous == state) return;
+        if (exists && previous.Fence.Name == fence.Name && previous.Fence.X == fence.X && previous.Fence.Y == fence.Y &&
+            previous.Fence.Width == fence.Width && previous.Fence.Height == fence.Height && previous.Fence.IsCollapsed == fence.IsCollapsed &&
+            previous.Layout == layout.Value && previous.Scale == scale && previous.Hover == hover && _host.Contains(fence.Id))
+        {
+            _host.SyncFenceModel(fence); _rendered[fence.Id] = state; return;
+        }
         var repaint = !exists || (!live && !_host.Contains(fence.Id)) ||
             previous.Fence.Name != fence.Name || previous.Fence.IsCollapsed != fence.IsCollapsed ||
             previous.Fence.Width != fence.Width || previous.Fence.X - previous.Layout.X != fence.X - layout.Value.X ||
@@ -285,5 +291,25 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         _host.CollapseRequested -= OnCollapseRequested;
         if (_icons is not null) { _icons.StatusChanged -= OnIconStatusChanged; _icons.FramePresented -= OnFramePresented; }
         _disposed = true; _rendered.Clear(); _renderer.Clear();
+    }
+    public async Task PrepareExitAsync()
+    {
+        var started = Stopwatch.GetTimestamp();
+        var wasAllowed = _interactionAllowed;
+        // Block new Fence gestures, but let an already released Explorer drop finish and persist.
+        _interactionAllowed = false; _host.InteractionEnabled = false;
+        try
+        {
+            while (_gestureOriginal is not null || _finishing || IsPresentingTransition)
+            {
+                if (Stopwatch.GetElapsedTime(started) > TimeSpan.FromSeconds(10))
+                    throw new InvalidOperationException("Дождитесь завершения изменения Fence и повторите выход.");
+                await Task.Delay(20);
+            }
+            // ViewModel has already persisted every completed gesture and accepted command.
+            // Do not rewrite unreadable/corrupt storage merely because the process is exiting.
+            if (_icons is not null) await _icons.PrepareExitAsync();
+        }
+        catch { SetInteractionEnabled(wasAllowed); throw; }
     }
 }

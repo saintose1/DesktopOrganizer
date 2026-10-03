@@ -28,7 +28,17 @@ internal static class InputHitSmoke
                     var scale = host.GetScale(fence);
                     var layout = FenceSurfaceLayout.Clip(fence, host.GetArea(), scale)!.Value;
                     host.Update(fence, layout, scale, new FenceBitmapRenderer().Render(fence, layout, scale)); host.FlushDamage();
+                    var second = fence.WithBounds(1500, 200, 400, 300);
+                    second = new Fence(Guid.NewGuid(), "Second input probe", second.X, second.Y, second.Width, second.Height);
+                    var secondLayout = FenceSurfaceLayout.Clip(second, host.GetArea(), scale)!.Value;
+                    host.Update(second, secondLayout, scale, new FenceBitmapRenderer().Render(second, secondLayout, scale)); host.FlushDamage();
                     await Task.Delay(100);
+                    for (var step = 0; step < 8; step++)
+                    {
+                        DesktopDiagnostics.ProbeListViewRaise(host);
+                        await Task.Delay(20);
+                    }
+                    Console.WriteLine("PASS: 8 real ListView raises restored 2 headers above icons and bodies below, with no extra repaint or bitmap presents. API/Z-order probe, not physical click verification.");
                     foreach (var (name, x, y, hit) in new[] { ("Header", 700, 150, 1), ("Content", 700, 250, -1), ("Left grip", 601, 250, 1) })
                     {
                         Console.WriteLine(name + ": " + DesktopDiagnostics.MouseTarget(handles, x, y));

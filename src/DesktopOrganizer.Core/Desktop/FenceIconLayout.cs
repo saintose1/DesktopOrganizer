@@ -85,4 +85,39 @@ public static class FenceIconLayout
         foreach (var key in ambiguous) result.Remove(key);
         return result;
     }
+
+    public static Fence? DropTarget(IReadOnlyList<Fence> fences, DesktopPoint point, Func<Fence, double> scaleFor) =>
+        fences.LastOrDefault(f => !f.IsCollapsed && point.X >= f.X && point.X < f.X + f.Width &&
+            point.Y >= f.Y + FenceInteractionGeometry.HeaderHeight * scaleFor(f) && point.Y < f.Y + f.Height);
+
+    /// <summary>One target for the entire captured Shell selection, regardless of individual final item bounds.</summary>
+    public static IReadOnlyList<Fence> ApplyGroupDrop(IReadOnlyList<Fence> fences, ExplorerDrop drop,
+        IReadOnlyList<DesktopIcon> finalIcons, IconGridMetrics metrics, Func<Fence, double> scaleFor)
+    {
+        if (!drop.DesktopTarget) return fences;
+        var matched = Match(finalIcons);
+        var ids = drop.DraggedIds.Where(matched.ContainsKey).ToHashSet(IdentityComparer);
+        if (ids.Count == 0 || !ids.Contains(drop.DraggedItemId)) return fences;
+        var target = DropTarget(fences, drop.Point, scaleFor);
+        return fences.Select(fence =>
+        {
+            var remaining = fence.Icons.Where(i => !ids.Contains(i.StableId)).ToList();
+            if (fence.Id == target?.Id)
+            {
+                // Preserve existing order; append all newcomers once, then arrange only this affected Fence.
+                remaining = fence.Icons.ToList();
+                var existing = remaining.Select(i => i.StableId).ToHashSet(IdentityComparer);
+                foreach (var id in drop.DraggedIds.Distinct(IdentityComparer))
+                    if (matched.TryGetValue(id, out var icon) && existing.Add(id)) remaining.Add(new(id, icon.DisplayName, 0, 0));
+            }
+            return fence.Icons.SequenceEqual(remaining) && fence.Id != target?.Id ? fence : Arrange(fence.WithIcons(remaining), metrics, scaleFor(fence));
+        }).ToArray();
+    }
+
+    public static IReadOnlyList<DesktopIconTarget> ChangedTargets(IReadOnlyList<DesktopIconTarget> targets, IReadOnlyList<DesktopIcon> icons)
+    {
+        var matched = Match(icons);
+        return targets.Where(t => matched.TryGetValue(t.StableId, out var icon) &&
+            Math.Abs(icon.Position.X - t.Position.X) + Math.Abs(icon.Position.Y - t.Position.Y) > 1).ToArray();
+    }
 }

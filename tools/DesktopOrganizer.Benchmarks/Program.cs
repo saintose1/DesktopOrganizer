@@ -15,6 +15,24 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--composition-ab") return CompositionAB.Run();
+        if (args.Length == 1 && args[0] == "--outline-composition")
+        {
+            foreach (var line in DesktopDiagnostics.CheckMarqueeCompositionLease(outline: true)) Console.WriteLine(line);
+            return 0;
+        }
+        if (args.Length == 1 && args[0] == "--selection-enumeration")
+        {
+            using var reader = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
+            Console.WriteLine(reader.ProbeSelectionEnumerationAsync().GetAwaiter().GetResult());
+            return 0;
+        }
+        if (args.Length == 1 && args[0] == "--input-routing-lifecycle")
+        {
+            var ready = DesktopDiagnostics.CheckBackgroundMouseRoutingLifetime();
+            Console.WriteLine(ready ? "PASS: native mouse hook/message-loop created and disposed; all input passed through. No Explorer gestures tested." : "FAIL: input routing could not start.");
+            return ready ? 0 : 1;
+        }
         if (args.Length == 1 && args[0] == "--icons-smoke") return DesktopSmoke.Run();
         if (args.Length == 1 && args[0] == "--rendering-smoke") return RenderingSmoke.Run();
         if (args.Length == 1 && args[0] == "--input-hit-smoke") return InputHitSmoke.Run();

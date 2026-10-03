@@ -8,7 +8,8 @@ using Microsoft.Extensions.Logging;
 namespace DesktopOrganizer.Infrastructure.Interop;
 
 [SupportedOSPlatform("windows")]
-public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32DesktopHost> logger, string? presentationRecoveryPath = null) : IDisposable
+public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32DesktopHost> logger, string? presentationRecoveryPath = null,
+    ExplorerInteractionTrace? interactionTrace = null) : IDisposable
 {
     private const string ClassName = "DesktopOrganizer.FenceSurface", BackgroundClass = "DesktopOrganizer.FenceBackground";
     private static readonly NativeMethods.WindowProc Procedure = WindowProcedure;
@@ -18,16 +19,24 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     private static readonly Dictionary<nint, (Win32DesktopHost Host, DesktopFenceInput Input)> Inputs = [];
     private static readonly Dictionary<nint, NativeFenceSurface> PaintSurfaces = [];
     private readonly HashSet<nint> _destroying = [];
-    private readonly DesktopIconEvents _iconEvents = new();
+    private readonly DesktopIconEvents _iconEvents = new(logger, interactionTrace);
+    public ExplorerInteractionTrace Trace { get; } = interactionTrace ?? new(Microsoft.Extensions.Logging.Abstractions.NullLogger<ExplorerInteractionTrace>.Instance);
     private IReadOnlyList<DesktopIcon> _icons = [];
     private bool _stackingDirty;
     private ExplorerIconLayer? _iconLayer;
+    private bool _probeCompositionEnabled = true;
+    private bool _probeNativeSelectionEnabled = true;
+    private bool _outlineMarquee = true;
     private readonly List<DesktopBounds> _damage = [];
+    private int _suppressExplorerPaint;
     public long RepaintCount { get; private set; }
     public long BitmapPresentCount => _windows.Values.Sum(s => s.Presents);
     private nint _dpiContext;
     private DesktopArea _area, _iconArea;
-    public bool InteractionEnabled { get; set; } = true;
+    private bool _interactionEnabled = true;
+    // A short drop commit must finish before a new native Fence collapse/drag mutates its proposal.
+    // The caller's write-permission state remains independent and survives the scope.
+    public bool InteractionEnabled { get => _interactionEnabled && _suppressExplorerPaint == 0; set => _interactionEnabled = value; }
     public bool HasActiveInteraction
     {
         get { foreach (var surface in _windows.Values) if (Inputs.TryGetValue(surface.Frame, out var input) && input.Input.Active) return true; return false; }
@@ -35,13 +44,23 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     public event EventHandler<FenceInteractionEventArgs>? Interaction;
     public event Action<Guid>? VisualChanged;
     public event Action? IconPositionsChanged;
+    public event Action<ExplorerPointerEvent>? ExplorerPointer;
+    public bool HasExplorerGesture => _iconEvents.GestureActive;
+    public void SetSelectionReader(IDesktopSelectionReader? reader) => _iconEvents.SelectionReader = reader;
+    public bool IsNativeSelection => _iconLayer?.NativeSelection == true;
+    internal void PrepareNativeSelection() { if (_probeNativeSelectionEnabled) _iconLayer?.BeginNativeSelection(); }
+    public void FinishNativeSelection() => _iconLayer?.EndNativeSelection();
     public event Action<Fence>? CollapseRequested;
     internal void NotifyCollapse(Fence fence) => CollapseRequested?.Invoke(fence);
     public IconGridMetrics IconMetrics { get; set; } = IconGridMetrics.Default;
     public DesktopHandles? Handles { get; private set; }
+    public nint SurfaceParent => Handles?.Host ?? 0;
     public bool PresentationConnected => Handles is not null && _iconLayer is not null;
     public int SurfaceCount => _windows.Count;
-    public string Diagnostics => Handles?.ToString() ?? discovery.LastDiagnostics;
+    public string Diagnostics => Handles is null ? discovery.LastDiagnostics : Handles.ToString();
+    internal void SetCompositionForProbe(bool enabled) { _probeCompositionEnabled = enabled; _iconLayer?.SetEnabled(enabled && _windows.Count != 0); }
+    internal void SetNativeSelectionForProbe(bool enabled) => _probeNativeSelectionEnabled = enabled;
+    internal void SetOutlineSelectionForProbe(bool enabled) { _outlineMarquee = enabled; _iconLayer?.SetOutlineForProbe(enabled); }
     public double DpiScale => Handles is null ? 1 : Math.Max(1, NativeMethods.GetDpiForWindow(Handles.Host) / 96.0);
     internal void NotifyInteraction(FenceInteractionEventArgs args)
     {
@@ -95,15 +114,23 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         foreach (var surface in _windows.Values) if (!OwnWindow(surface.Frame) || !OwnWindow(surface.Background)) { lost = true; break; }
         if (found != Handles || lost) { Clear(); _iconLayer?.Dispose(); _iconLayer = null; Handles = found; }
         if (Handles is null) { _iconEvents.Connect(null); return false; }
-        _iconLayer ??= new ExplorerIconLayer(Handles, discovery, _logger, presentationRecoveryPath);
+        _iconLayer ??= new ExplorerIconLayer(Handles, discovery, _logger, presentationRecoveryPath, _probeCompositionEnabled && _windows.Count != 0, Trace, _outlineMarquee);
         _iconEvents.Changed -= OnIconsChanged;
         _iconEvents.Changed += OnIconsChanged;
+        _iconEvents.StackingChanged -= OnStackingChanged;
+        _iconEvents.StackingChanged += OnStackingChanged;
+        _iconEvents.BackgroundPress -= OnBackgroundPress;
+        _iconEvents.BackgroundPress += OnBackgroundPress;
+        _iconEvents.BackgroundPressClassified -= OnBackgroundPressClassified;
+        _iconEvents.BackgroundPressClassified += OnBackgroundPressClassified;
+        _iconEvents.Pointer -= OnExplorerPointer;
+        _iconEvents.Pointer += OnExplorerPointer;
         try { _iconEvents.Connect(Handles); }
-        catch (Exception error) { _logger.LogWarning(error, "Desktop WinEvent notifications unavailable; observation fallback remains active"); }
-        _dpiContext = NativeMethods.GetWindowDpiAwarenessContext(Handles.Host);
+        catch (Exception error) { _logger.LogWarning(error, "Desktop input/drop notifications unavailable; observation fallback remains active and connection will retry"); }
+        _dpiContext = NativeMethods.GetWindowDpiAwarenessContext(SurfaceParent);
         using var dpi = new DesktopDpiScope(_dpiContext);
-        Check(NativeMethods.GetClientRect(Handles.Host, out var rect));
-        var origin = new NativeMethods.Point(); Check(NativeMethods.ClientToScreen(Handles.Host, ref origin));
+        Check(NativeMethods.GetClientRect(SurfaceParent, out var rect));
+        var origin = new NativeMethods.Point(); Check(NativeMethods.ClientToScreen(SurfaceParent, ref origin));
         _area = new(origin.X, origin.Y, rect.Right - rect.Left, rect.Bottom - rect.Top);
         Check(NativeMethods.GetClientRect(Handles.IconList, out rect)); origin = new(); Check(NativeMethods.ClientToScreen(Handles.IconList, ref origin));
         _iconArea = new(origin.X, origin.Y, rect.Right - rect.Left, rect.Bottom - rect.Top);
@@ -117,11 +144,12 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         if (!_windows.TryGetValue(fence.Id, out var surface))
         {
             var handles = RequireHost(); RegisterClass();
-            var background = Create(BackgroundClass, "DesktopOrganizer Fence background", handles.Host, true);
+            _iconLayer?.SetEnabled(_probeCompositionEnabled);
+            var background = Create(BackgroundClass, "DesktopOrganizer Fence background", SurfaceParent, true);
             nint frame = 0;
             try
             {
-                frame = Create(ClassName, $"DesktopOrganizer Fence: {fence.Name}", handles.Host, false);
+                frame = Create(ClassName, $"DesktopOrganizer Fence: {fence.Name}", SurfaceParent, false);
                 surface = new NativeFenceSurface(frame, background);
             }
             catch { if (frame != 0) NativeMethods.DestroyWindow(frame); NativeMethods.DestroyWindow(background); throw; }
@@ -129,10 +157,10 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
             Inputs.Add(frame, (this, new DesktopFenceInput(this, frame) { Fence = fence, Scale = scale }));
             PaintSurfaces.Add(frame, surface); PaintSurfaces.Add(background, surface);
             _stackingDirty = true;
-            _logger.LogInformation("Created desktop Fence {Id}: frame=0x{Frame:X}; background=0x{Background:X}; Parent=0x{Parent:X}", fence.Id, frame, background, handles.Host);
+            _logger.LogInformation("Created desktop Fence {Id}: frame=0x{Frame:X}; background=0x{Background:X}; Parent=0x{Parent:X}", fence.Id, frame, background, SurfaceParent);
         }
         if (!NativeMethods.IsWindow(surface.Frame) || !NativeMethods.IsWindow(surface.Background) ||
-            NativeMethods.GetParent(surface.Frame) != Handles?.Host || NativeMethods.GetParent(surface.Background) != Handles?.Host)
+            NativeMethods.GetParent(surface.Frame) != SurfaceParent || NativeMethods.GetParent(surface.Background) != SurfaceParent)
             throw new InvalidOperationException("Desktop surface lost its validated parent.");
         if (Inputs.TryGetValue(surface.Frame, out var input))
         {
@@ -141,6 +169,7 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         }
         AddDamage(surface.Layout);
         surface.Update(fence, layout, scale, header, GetHover(fence.Id), _area);
+        Trace.Mark("Fence.ULW/update");
         AddDamage(layout);
         if (_stackingDirty) EnsureStacking();
     }
@@ -155,12 +184,27 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         if (OwnWindow(surface.Background) && !_destroying.Contains(surface.Background)) Check(NativeMethods.DestroyWindow(surface.Background));
         _destroying.Remove(surface.Frame); _destroying.Remove(surface.Background);
         surface.Dispose();
+        if (_windows.Count == 0) _iconLayer?.SetEnabled(false);
         _logger.LogInformation("Destroyed desktop Fence {Id}", id);
     }
     public void Clear() { foreach (var id in _windows.Keys.ToArray()) Remove(id); }
     public void SetIcons(IReadOnlyList<DesktopIcon> icons)
     {
         _icons = icons;
+    }
+    public void SyncFenceModel(Fence fence)
+    {
+        if (_windows.TryGetValue(fence.Id, out var surface) && Inputs.TryGetValue(surface.Frame, out var input)) input.Input.Fence = fence;
+    }
+    public IDisposable SuppressExplorerPainting()
+    {
+        _suppressExplorerPaint++;
+        return new PaintScope(this);
+    }
+    private sealed class PaintScope(Win32DesktopHost host) : IDisposable
+    {
+        private bool _disposed;
+        public void Dispose() { if (_disposed) return; _disposed = true; host._damage.Clear(); host._suppressExplorerPaint--; }
     }
     public void SetIconTargets(IReadOnlyList<DesktopIconTarget> targets)
     {
@@ -177,26 +221,44 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     public void EnsureStacking()
     {
         if (Handles is null) return;
-        var listSeen = false; var raised = _stackingDirty;
-        for (var sibling = NativeMethods.GetWindow(Handles.Host, 5); sibling != 0; sibling = NativeMethods.GetWindow(sibling, 2))
+        var listSeen = false;
+        var misplacedFrames = new HashSet<nint>();
+        var misplacedBodies = new HashSet<nint>();
+        var iconLayer = Handles.IconList;
+        for (var sibling = NativeMethods.GetWindow(SurfaceParent, 5); sibling != 0; sibling = NativeMethods.GetWindow(sibling, 2))
         {
-            if (sibling == Handles.IconList) listSeen = true;
-            if (PaintSurfaces.TryGetValue(sibling, out var surface) &&
-                ((sibling == surface.Frame && listSeen) || (sibling == surface.Background && !listSeen))) { raised = true; break; }
+            if (sibling == iconLayer) listSeen = true;
+            if (PaintSurfaces.TryGetValue(sibling, out var surface))
+            {
+                if (sibling == surface.Frame && listSeen) misplacedFrames.Add(sibling);
+                if (sibling == surface.Background && !listSeen) misplacedBodies.Add(sibling);
+            }
         }
-        if (!raised) return;
-        // Explorer may raise ListView on a folder-flag change. Correct that event once,
-        // rather than perturbing cross-process sibling order on every mouse move.
-        foreach (var surface in _windows.Values)
-        {
-            // Every uniform body is below the transparent Explorer icon layer.
-            if (OwnWindow(surface.Background) && NativeMethods.GetParent(surface.Background) == Handles.Host)
-                Check(NativeMethods.SetWindowPos(surface.Background, Handles.IconList, 0, 0, 0, 0, 0x13));
-        }
-        foreach (var surface in _windows.Values)
-            if (OwnWindow(surface.Frame)) Check(NativeMethods.SetWindowPos(surface.Frame, 0, 0, 0, 0, 0, 0x13));
         _stackingDirty = false;
-        // ULW images are already complete; no parent/GDI repaint cascade after restacking.
+        var count = misplacedFrames.Count + misplacedBodies.Count;
+        if (count == 0) return;
+        var batch = NativeMethods.BeginDeferWindowPos(count);
+        if (batch == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        // A ListView focus/reorder must not also reorder every already-correct body HWND.
+        // Cached layered images are composed in the new order without a GDI erase/repaint cascade.
+        const uint flags = 0x1B; // NOMOVE | NOSIZE | NOACTIVATE | NOREDRAW
+        foreach (var surface in _windows.Values)
+        {
+            if (misplacedBodies.Contains(surface.Background) && OwnWindow(surface.Background))
+                batch = NativeMethods.DeferWindowPos(batch, surface.Background, iconLayer, 0, 0, 0, 0, flags);
+            if (batch == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        nint above = 0;
+        foreach (var surface in _windows.Values.Reverse())
+        {
+            if (misplacedFrames.Contains(surface.Frame) && OwnWindow(surface.Frame))
+                batch = NativeMethods.DeferWindowPos(batch, surface.Frame, above, 0, 0, 0, 0, flags);
+            if (batch == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            above = surface.Frame;
+        }
+        Check(NativeMethods.EndDeferWindowPos(batch));
+        Trace.Mark("Stacking.corrected.frames", misplacedFrames.Count);
+        Trace.Mark("Stacking.corrected.bodies", misplacedBodies.Count);
     }
     /// <summary>Finish the single Explorer dirty-region repaint following a surface/icon presentation.</summary>
     public void FlushPainting()
@@ -207,6 +269,7 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     { if (layout.Width > 0 && layout.Height > 0) _damage.Add(new(layout.X, layout.Y, layout.Width, layout.Height)); }
     public void FlushDamage()
     {
+        if (_suppressExplorerPaint != 0) { _damage.Clear(); return; }
         if (_damage.Count == 0) return;
         if (Handles is null || !NativeMethods.IsWindow(Handles.IconList) || NativeMethods.ProcessOf(Handles.IconList) != Handles.ProcessId) { _damage.Clear(); return; }
         var rectangles = DesktopDamage.Clip(_damage, _iconArea); _damage.Clear();
@@ -223,9 +286,30 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
                 finally { NativeMethods.DeleteObject(part); }
             }
             Check(NativeMethods.RedrawWindow(Handles.IconList, 0, region, 0x145)); // INVALIDATE | ERASE | UPDATENOW | NOCHILDREN. Clear old glyphs with the transparent key, never repaint the whole desktop.
+            Trace.Mark("RedrawWindow.ListView.damage");
             RepaintCount++;
         }
         finally { NativeMethods.DeleteObject(region); }
+    }
+    private void OnBackgroundPress() => PrepareNativeSelection();
+    private void OnBackgroundPressClassified() { if (_probeNativeSelectionEnabled) _iconLayer?.PrepareBackgroundSelection(); }
+    private void OnExplorerPointer(ExplorerPointerEvent input)
+    {
+        // A rapid icon press may arrive before the previous marquee's release
+        // observation. Restore buffering first; a newly classified background
+        // press will prepare outline mode again before forwarded native DOWN.
+        if (input.Phase == ExplorerPointerPhase.Pressed) FinishNativeSelection();
+        ExplorerPointer?.Invoke(input);
+    }
+    private void OnStackingChanged()
+    {
+        try
+        {
+            // Z-order is presentation only: do not wait for post-drop/polling to restore headers
+            // when Explorer raises its ListView on focus. No icon move/layout/save is performed.
+            EnsureStacking();
+        }
+        catch (Exception error) { _logger.LogWarning(error, "Desktop stacking notification interrupted"); }
     }
     private void OnIconsChanged()
     {

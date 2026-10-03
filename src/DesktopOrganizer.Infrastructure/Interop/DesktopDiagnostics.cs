@@ -9,11 +9,80 @@ namespace DesktopOrganizer.Infrastructure.Interop;
 public sealed record SurfaceDiagnostic(string Hwnd, string Parent, string Root, string Caption,
     uint ProcessId, bool Visible, bool Child, bool Popup, bool AppWindow, DesktopArea Bounds);
 public sealed record MouseTargetDiagnostic(int X, int Y, string Hwnd, string ClassName, string ExpectedListView);
+public sealed record DesktopInputDiagnostic(int X, int Y, string Capture, int SelectedIcons, bool LeftButtonDown);
 
 /// <summary>Read-only native inspection for manual verification; no Explorer changes.</summary>
 [SupportedOSPlatform("windows")]
 public static class DesktopDiagnostics
 {
+    /// <summary>Native tray inspection/callback replay, not a physical notification-area click.</summary>
+    public static string TrayState(uint processId, bool open = false, bool exit = false, bool menu = false)
+    {
+        nint owner = 0, main = 0;
+        NativeMethods.EnumProc callback = (window, _) =>
+        {
+            if (NativeMethods.ProcessOf(window) != processId) return true;
+            if (NativeMethods.ClassOf(window).StartsWith("DesktopOrganizer.Tray.", StringComparison.Ordinal)) owner = window;
+            var caption = new StringBuilder(256); NativeMethods.GetWindowText(window, caption, caption.Capacity);
+            if (caption.ToString() == "DesktopOrganizer — группы") main = window;
+            return true;
+        };
+        NativeMethods.EnumWindows(callback, 0);
+        if (owner == 0 || !NativeMethods.IsWindow(owner)) throw new InvalidOperationException("No validated DesktopOrganizer tray owner.");
+        var identity = new TrayNative.IconIdentifier { Size = (uint)Marshal.SizeOf<TrayNative.IconIdentifier>(), Window = owner, Id = 1 };
+        var found = TrayNative.GetIconRect(ref identity, out var rectangle) >= 0;
+        if (open || exit || menu)
+        {
+            if (!NativeMethods.PostMessage(owner, exit ? 0x111 : WindowsTrayIcon.Callback,
+                exit ? 2 : 0, exit ? 0 : menu ? 0x7b : 0x400)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        return $"TrayHWND=0x{owner:X}; registered={found}; rect={rectangle.Left},{rectangle.Top},{rectangle.Right},{rectangle.Bottom}; " +
+            $"MainHWND=0x{main:X}; visible={NativeMethods.IsWindowVisible(main)}; ownerVisible={NativeMethods.IsWindowVisible(owner)}";
+    }
+    /// <summary>Reproduces a native ListView raise for presentation checks, without moving icons or sending mouse input.</summary>
+    public static void ProbeListViewRaise(Win32DesktopHost host)
+    {
+        var handles = host.Handles ?? throw new InvalidOperationException("No desktop host.");
+        if (!new DesktopDiscovery(Microsoft.Extensions.Logging.Abstractions.NullLogger<DesktopDiscovery>.Instance).Validate(handles))
+            throw new InvalidOperationException("Desktop host validation failed.");
+        var repaint = host.RepaintCount; var bitmap = host.BitmapPresentCount;
+        if (!NativeMethods.SetWindowPos(handles.IconList, 0, 0, 0, 0, 0, 0x1B))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        host.EnsureStacking();
+        var seen = false;
+        for (var window = NativeMethods.GetWindow(handles.Host, 5); window != 0; window = NativeMethods.GetWindow(window, 2))
+        {
+            if (window == handles.IconList) seen = true;
+            if (NativeMethods.ProcessOf(window) != Environment.ProcessId) continue;
+            var name = NativeMethods.ClassOf(window);
+            if ((name == "DesktopOrganizer.FenceSurface" && seen) || (name == "DesktopOrganizer.FenceBackground" && !seen))
+                throw new InvalidOperationException("Fence/ListView composition order was not restored.");
+        }
+        if (host.RepaintCount != repaint || host.BitmapPresentCount != bitmap)
+            throw new InvalidOperationException("Z-order correction unexpectedly repainted/rasterized Fence content.");
+    }
+    public static DesktopInputDiagnostic InputState(DesktopHandles handles)
+    {
+        if (!new DesktopDiscovery(Microsoft.Extensions.Logging.Abstractions.NullLogger<DesktopDiscovery>.Instance).Validate(handles))
+            throw new InvalidOperationException("No validated desktop input target.");
+        using var dpi = new DesktopDpiScope();
+        if (!NativeMethods.GetCursorPos(out var point)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var thread = NativeMethods.GetWindowThreadProcessId(handles.IconList, out _);
+        var info = new NativeMethods.GuiThreadInfo { Size = (uint)Marshal.SizeOf<NativeMethods.GuiThreadInfo>() };
+        if (!NativeMethods.GetGUIThreadInfo(thread, ref info)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return new(point.X, point.Y, $"0x{info.Capture:X}",
+            (int)NativeMethods.SendMessage(handles.IconList, 0x1032, 0, 0), // LVM_GETSELECTEDCOUNT, read only.
+            (NativeMethods.GetAsyncKeyState(1) & 0x8000) != 0);
+    }
+    /// <summary>Checks only our hook/message-loop lifetime. Null HWNDs force every event to pass through.</summary>
+    public static bool CheckBackgroundMouseRoutingLifetime()
+    {
+        using var route = new ExplorerBackgroundMouse(new(0, 0, 0, 0, 0, 0),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        var ready = route.IsAvailable;
+        route.Dispose();
+        return ready && route.IsStopped;
+    }
     public static MouseTargetDiagnostic MouseTarget(DesktopHandles handles, int x, int y)
     {
         using var dpi = new DesktopDpiScope();
@@ -26,7 +95,8 @@ public static class DesktopDiagnostics
         nint frame = 0;
         NativeMethods.EnumChildWindows(handles.Host, (window, _) =>
         {
-            if (NativeMethods.ClassOf(window) == "DesktopOrganizer.FenceSurface" && NativeMethods.ProcessOf(window) == Environment.ProcessId)
+            if (NativeMethods.ClassOf(window) == "DesktopOrganizer.FenceSurface" && NativeMethods.ProcessOf(window) == Environment.ProcessId &&
+                NativeMethods.GetWindowRect(window, out var bounds) && x >= bounds.Left && x < bounds.Right && y >= bounds.Top && y < bounds.Bottom)
             { frame = window; return false; }
             return true;
         }, 0);
@@ -51,6 +121,70 @@ public static class DesktopDiagnostics
         Marshal.ThrowExceptionForHR(view.View.GetCurrentFolderFlags(out var flags));
         return $"FolderFlags=0x{flags:X}; IconListVisible={NativeMethods.IsWindowVisible(handles.IconList)}; ex=0x{NativeMethods.GetWindowStyle(handles.IconList, -20):X}; styles=0x{NativeMethods.SendMessage(handles.IconList, 0x1037, 0, 0):X}; bg=0x{NativeMethods.SendMessage(handles.IconList, 0x1000, 0, 0):X}";
     }
+    public static string CompositionState(DesktopHandles handles) =>
+        $"Visible={NativeMethods.IsWindowVisible(handles.IconList)}; ex=0x{NativeMethods.GetWindowStyle(handles.IconList, -20):X}; styles=0x{NativeMethods.SendMessage(handles.IconList, 0x1037, 0, 0):X}; bg=0x{NativeMethods.SendMessage(handles.IconList, 0x1000, 0, 0):X}; textBg=0x{NativeMethods.SendMessage(handles.IconList, 0x1025, 0, 0):X}";
+    /// <summary>Actual lease/property transitions only, without synthesizing any Explorer mouse/OLE gesture.</summary>
+    public static IReadOnlyList<string> CheckMarqueeCompositionLease(bool outline = true)
+    {
+        var discovery = new DesktopDiscovery(Microsoft.Extensions.Logging.Abstractions.NullLogger<DesktopDiscovery>.Instance);
+        var handles = discovery.Find() ?? throw new InvalidOperationException("No Explorer desktop.");
+        if (Inspect(handles).Count != 0) throw new InvalidOperationException("Close DesktopOrganizer before the reversible composition probe.");
+        var before = CompositionState(handles);
+        var result = new List<string> { "App off: " + before };
+        var trace = new ExplorerInteractionTrace(Microsoft.Extensions.Logging.Abstractions.NullLogger<ExplorerInteractionTrace>.Instance);
+        using (var host = new Win32DesktopHost(discovery, Microsoft.Extensions.Logging.Abstractions.NullLogger<Win32DesktopHost>.Instance, interactionTrace: trace))
+        {
+            if (!host.Connect()) throw new InvalidOperationException("No desktop host.");
+            var empty = CompositionState(handles);
+            if (empty != before) throw new InvalidOperationException("A host with no Fence changed Explorer composition.");
+            result.Add("No Fence: " + empty);
+            host.SetOutlineSelectionForProbe(outline);
+            var fence = new DesktopOrganizer.Core.Models.Fence(Guid.NewGuid(), "Composition probe", 1900, 1000, 300, 200);
+            var layout = FenceSurfaceLayout.Clip(fence, host.GetArea(), host.GetScale(fence)) ?? throw new InvalidOperationException("No probe area.");
+            host.Update(fence, layout, host.GetScale(fence), null);
+            var idle = CompositionState(handles);
+            if (((uint)NativeMethods.SendMessage(handles.IconList, 0x1037, 0, 0) & 0x10000) == 0)
+                throw new InvalidOperationException("Idle icon rendering lost double buffering.");
+            var presents = host.BitmapPresentCount;
+            result.Add("Fence idle: " + idle);
+            trace.Begin();
+            host.PrepareNativeSelection();
+            var native = CompositionState(handles);
+            if (outline)
+            {
+                var styles = (uint)NativeMethods.SendMessage(handles.IconList, 0x1037, 0, 0);
+                var expected = idle.Replace($"styles=0x{styles | 0x10000:X}", $"styles=0x{styles:X}");
+                if ((styles & 0x10000) != 0 || native != expected)
+                    throw new InvalidOperationException("Outline selection changed more than its double-buffering bit.");
+            }
+            else if (native != before) throw new InvalidOperationException("Native marquee composition differs from original Explorer.");
+            result.Add("Native selection backing: " + native);
+            host.PrepareNativeSelection();
+            if (CompositionState(handles) != native) throw new InvalidOperationException("Repeated marquee begin changed active composition.");
+            host.FinishNativeSelection();
+            if (CompositionState(handles) != idle) throw new InvalidOperationException("Marquee completion did not restore idle composition.");
+            host.FinishNativeSelection();
+            if (CompositionState(handles) != idle || host.BitmapPresentCount != presents)
+                throw new InvalidOperationException("Marquee rebuilt Fence bitmaps or changed state after repeated completion.");
+            if (outline && trace.Snapshot.Any(p => p.Stage.StartsWith("RedrawWindow", StringComparison.Ordinal)))
+                throw new InvalidOperationException("Stable marquee performed an additional composition repaint.");
+            result.Add("Fence restored: " + CompositionState(handles));
+            if (outline)
+            {
+                host.PrepareNativeSelection();
+                host.SetCompositionForProbe(false);
+                host.FinishNativeSelection();
+                if (CompositionState(handles) != before)
+                    throw new InvalidOperationException("Disabling Fence during selection did not restore Explorer properties.");
+                host.SetCompositionForProbe(true);
+                host.PrepareNativeSelection(); // Dispose must also restore an unfinished selection.
+                result.Add("PASS: double buffering idle/after selection; only its bit changes during selection; 0 extra composition redraws; no Fence bitmap presents; disable during selection; unfinished selection shutdown");
+            }
+        }
+        if (CompositionState(handles) != before) throw new InvalidOperationException("Explorer properties were not restored.");
+        result.Add("Shutdown restored: " + before);
+        return result;
+    }
     public static void ShowProbeBackgrounds(Win32DesktopHost host, bool visible)
     {
         NativeMethods.EnumChildWindows(host.Handles!.Host, (window, _) =>
@@ -60,6 +194,22 @@ public static class DesktopDiagnostics
             return true;
         }, 0);
     }
+    public static void ShowOwnProbeLayers(Win32DesktopHost host, bool body, bool frame)
+    {
+        NativeMethods.EnumChildWindows(host.SurfaceParent, (window, _) =>
+        {
+            if (NativeMethods.ProcessOf(window) == Environment.ProcessId && NativeMethods.GetParent(window) == host.SurfaceParent)
+            {
+                var name = NativeMethods.ClassOf(window);
+                if (name == "DesktopOrganizer.FenceBackground") NativeMethods.ShowWindow(window, body ? 8 : 0);
+                if (name == "DesktopOrganizer.FenceSurface") NativeMethods.ShowWindow(window, frame ? 8 : 0);
+            }
+            return true;
+        }, 0);
+    }
+    public static void SetProbeIconComposition(Win32DesktopHost host, bool enabled) => host.SetCompositionForProbe(enabled);
+    public static void SetProbeNativeSelection(Win32DesktopHost host, bool enabled) => host.SetNativeSelectionForProbe(enabled);
+    public static void SetProbeOutlineSelection(Win32DesktopHost host, bool enabled) => host.SetOutlineSelectionForProbe(enabled);
     public static IReadOnlyList<string> Layers(DesktopHandles handles)
     {
         using var dpi = new DesktopDpiScope();
@@ -110,7 +260,7 @@ public static class DesktopDiagnostics
     {
         using var dpi = new DesktopDpiScope();
         var result = new List<SurfaceDiagnostic>();
-        NativeMethods.EnumChildWindows(handles.Host, (window, _) =>
+        NativeMethods.EnumChildWindows(NativeMethods.GetParent(handles.DefView), (window, _) =>
         {
             if (NativeMethods.ClassOf(window) != "DesktopOrganizer.FenceSurface") return true;
             var caption = new StringBuilder(256);
