@@ -5,6 +5,8 @@ using DesktopOrganizer.Core.Desktop;
 using DesktopOrganizer.Core.Models;
 using DesktopOrganizer.Core.Storage;
 using DesktopOrganizer.Infrastructure.Interop;
+using DesktopOrganizer.App.ViewModels;
+using System.ComponentModel;
 using Microsoft.Extensions.Logging;
 
 namespace DesktopOrganizer.App.Desktop;
@@ -15,6 +17,21 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
     private readonly FenceBitmapRenderer _renderer;
     private readonly ILogger<DesktopIntegrationService> _logger;
     private readonly DispatcherTimer _timer, _inputTimer;
+    private readonly DispatcherTimer _hoverTimer;
+    private readonly SettingsViewModel? _settings;
+    private readonly FenceTransitionAnimator _animator = new();
+    private (Guid Id, double Height)? _animatedHeight;
+    private readonly Dictionary<Guid, FenceHoverState> _hoverStates = [];
+    private TimeSpan? _scheduledHoverDeadline;
+    private static TimeSpan HoverNow => TimeSpan.FromSeconds((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency);
+    private bool HoverBusy => IsPresentingTransition || _finishing || _gestureOriginal is not null ||
+        !_interactionAllowed || _host.HasActiveInteraction || _host.HasExplorerGesture || _host.IsLeftButtonDown ||
+        _host.IsExplorerDragging || _host.IsNativeSelection || _icons is { ExplorerPhase: not ExplorerGesturePhase.Idle };
+    private Fence DisplayFence(Fence fence) => fence.IsCollapsed && _hoverStates.TryGetValue(fence.Id, out var hover) && hover.Expanded
+        ? fence.ToggleCollapsed() : fence;
+    private Fence ManualFence(Fence fence) => _indices.TryGetValue(fence.Id, out var index) && fence.IsCollapsed != _fences[index].IsCollapsed
+        ? fence.ToggleCollapsed() : fence;
+    private Fence[] DisplayFences() => _fences.Select(DisplayFence).ToArray();
     private readonly DesktopIconCoordinator? _icons;
     private readonly Dictionary<Guid, (Fence Fence, FenceSurfaceLayout Layout, double Scale, FenceHit Hover)> _rendered = [];
     private readonly Dictionary<Guid, int> _indices = [];
@@ -38,14 +55,21 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         ? FenceIconLayout.Arrange(proposed, _icons?.Metrics ?? IconGridMetrics.Default, _host.GetScale(proposed)) : proposed;
 
     public DesktopIntegrationService(Win32DesktopHost host, FenceBitmapRenderer renderer, ILogger<DesktopIntegrationService> logger,
-        IDesktopIconService? icons = null, ILogger<DesktopIconCoordinator>? iconLogger = null, IIconRecoveryStore? recoveryStore = null)
+        IDesktopIconService? icons = null, ILogger<DesktopIconCoordinator>? iconLogger = null, IIconRecoveryStore? recoveryStore = null,
+        SettingsViewModel? settings = null)
     {
         _host = host; _renderer = renderer; _logger = logger;
+        _settings = settings;
+        if (_settings is not null) _settings.PropertyChanged += OnPreferencesChanged;
+        _hoverTimer = new DispatcherTimer(DispatcherPriority.Input);
+        _hoverTimer.Tick += OnHoverDeadline;
+        _host.HoverPointerMoved += OnHoverPointer;
         if (icons is not null)
         {
             _icons = new(icons, host, iconLogger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<DesktopIconCoordinator>.Instance, RequestStateChange, recoveryStore);
             _icons.StatusChanged += OnIconStatusChanged;
             _icons.FramePresented += OnFramePresented;
+            _icons.GestureSettled += RefreshHoverPointer;
         }
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
         _timer.Tick += OnTick;
@@ -65,23 +89,119 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_gestureOriginal is not null) return; // Editor preview never drives native rendering back.
         _fences = fences.ToArray();
+        foreach (var removed in _hoverStates.Keys.Except(_fences.Select(f => f.Id)).ToArray()) _hoverStates.Remove(removed);
         _indices.Clear();
         for (var i = 0; i < _fences.Length; i++) _indices[_fences[i].Id] = i;
         if (_started) Reconcile(discover: false);
-        _icons?.SetFences(_fences);
+        _icons?.SetFences(DisplayFences());
+        RefreshHoverPointer();
     }
     private bool RequestStateChange(IReadOnlyList<Fence> fences)
     {
-        var request = new FenceStateChangeRequest(fences);
+        // Coordinator works with displayed expansion; persistence retains manual collapse.
+        var request = new FenceStateChangeRequest(fences.Select(f =>
+            _hoverStates.TryGetValue(f.Id, out var hover) && hover.Expanded ? ManualFence(f) : f).ToArray());
         StateChangeRequested?.Invoke(this, request);
         return request.Accepted;
     }
     private void OnTick(object? sender, EventArgs args) { if (!_host.HasActiveInteraction && !_host.HasExplorerGesture && !_host.IsExplorerDragging && !_host.IsNativeSelection) Reconcile(); }
+    private void OnPreferencesChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName == nameof(SettingsViewModel.AutoExpandOnHover)) RefreshHoverPointer();
+    }
+    private void RefreshHoverPointer()
+    {
+        if (_disposed || !_started) return;
+        try { var pointer = _host.ReadHoverPointer(); OnHoverPointer(pointer.Point, pointer.OnDesktop); }
+        catch (Exception error) { _logger.LogDebug(error, "Hover pointer unavailable"); }
+    }
+    private void OnHoverPointer(DesktopPoint point, bool onDesktop)
+    {
+        if (_disposed || !_started) return;
+        var enabled = _settings?.AutoExpandOnHover == true;
+        var now = HoverNow;
+        var busy = HoverBusy;
+        foreach (var fence in _fences)
+        {
+            if (!_hoverStates.TryGetValue(fence.Id, out var hover))
+            {
+                if (!enabled) continue;
+                _hoverStates.Add(fence.Id, hover = new());
+            }
+            if (!_rendered.TryGetValue(fence.Id, out var rendered)) continue;
+            var displayed = DisplayFence(fence);
+            var x = point.X - fence.X; var y = point.Y - fence.Y;
+            var inside = onDesktop && x >= 0 && x < displayed.Width && y >= 0 &&
+                y < FenceInteractionGeometry.VisibleHeight(displayed, rendered.Scale);
+            var onHandle = inside && FenceInteractionGeometry.HitTest(displayed, x, y, rendered.Scale) != FenceHit.None;
+            hover.Observe(enabled, fence.IsCollapsed, inside, onHandle, busy, now);
+        }
+        ScheduleHoverDeadline();
+    }
+    private void ScheduleHoverDeadline()
+    {
+        var due = _hoverStates.Values.Where(h => h.DueAt is not null).Select(h => h.DueAt!.Value).ToArray();
+        if (due.Length == 0) { _hoverTimer.Stop(); _scheduledHoverDeadline = null; return; }
+        var deadline = due.Min();
+        // Raw mouse movement must not continually requeue an already armed deadline.
+        if (_hoverTimer.IsEnabled && _scheduledHoverDeadline == deadline) return;
+        _hoverTimer.Stop(); _scheduledHoverDeadline = deadline;
+        var delay = deadline - HoverNow;
+        // Zero interval queues the one-shot callback directly on the Dispatcher,
+        // without the minimum native timer delay or reentrancy in raw input handling.
+        _hoverTimer.Interval = delay > TimeSpan.Zero ? delay : TimeSpan.Zero;
+        _hoverTimer.Start();
+    }
+    private async void OnHoverDeadline(object? sender, EventArgs args)
+    {
+        _hoverTimer.Stop(); _scheduledHoverDeadline = null;
+        RefreshHoverPointer(); // One deadline verification, not continuous pointer polling.
+        if (_disposed || HoverBusy) return;
+        var due = _hoverStates.FirstOrDefault(pair => pair.Value.Due(HoverNow) is not null);
+        if (due.Value is null || !_indices.TryGetValue(due.Key, out var index)) return;
+        _hoverTimer.Stop(); _scheduledHoverDeadline = null;
+        var expanded = due.Value.Due(HoverNow)!.Value;
+        var manual = _fences[index];
+        var original = DisplayFence(manual);
+        var next = expanded && manual.IsCollapsed ? manual.ToggleCollapsed() : manual;
+        var previousLease = due.Value.Expanded;
+        IsPresentingTransition = true; _host.InteractionEnabled = false;
+        if (_icons is not null) _icons.InteractionActive = true;
+        ConnectionChanged?.Invoke(this, EventArgs.Empty);
+        try
+        {
+            await FenceVisualTransaction.ExecuteAsync(original, next, async fence =>
+            {
+                await PresentFenceTransitionAsync(fence);
+            }, async () =>
+            {
+                if (_icons is not null) await _icons.VerifyTransitionAsync(next);
+                return !_disposed;
+            });
+            if (_disposed) return;
+            due.Value.Presented(expanded);
+            _icons?.SetFences(DisplayFences());
+        }
+        catch (Exception error)
+        {
+            due.Value.Presented(previousLease); due.Value.ManualAction();
+            _logger.LogWarning(error, "Temporary Fence hover presentation failed; manual state retained");
+        }
+        finally
+        {
+            _animatedHeight = null;
+            IsPresentingTransition = false;
+            if (_icons is not null) _icons.InteractionActive = false;
+            _host.InteractionEnabled = _interactionAllowed;
+            ConnectionChanged?.Invoke(this, EventArgs.Empty);
+            Reconcile(discover: false); RefreshHoverPointer();
+        }
+    }
     private void OnIconStatusChanged(object? sender, EventArgs args) => Publish(Connection with { IconStatus = _icons?.Status ?? "" });
     private void OnVisualChanged(Guid id)
     {
         if (IsPresentingTransition || _finishing || _gestureOriginal is not null || !_indices.TryGetValue(id, out var index) || !_rendered.TryGetValue(id, out var state)) return;
-        try { RenderFence(_fences[index], _host.GetArea(), state.Scale); }
+        try { RenderFence(DisplayFence(_fences[index]), _host.GetArea(), state.Scale); }
         catch (Exception exception) { _logger.LogWarning(exception, "Desktop hover interrupted"); Reconcile(); }
     }
     private void OnInteraction(object? sender, FenceInteractionEventArgs args)
@@ -89,19 +209,19 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         if (args.Phase == InteractionPhase.Started)
         {
             if (!_indices.TryGetValue(args.Fence.Id, out _gestureIndex)) return;
-            _gestureOriginal = args.Fence; _preview = args.Fence;
+            _gestureOriginal = ManualFence(args.Fence); _preview = _gestureOriginal;
             if (_icons is not null) _icons.InteractionActive = true;
             _gestureScale = _rendered.TryGetValue(args.Fence.Id, out var state) ? state.Scale : _host.GetScale(args.Fence);
             _performance.Begin(args.Hit == FenceHit.Header ? "Drag" : "Resize", _host.RepaintCount, _host.BitmapPresentCount); _lastEditorUpdate = Stopwatch.GetTimestamp();
-            Interaction?.Invoke(this, args);
+            Interaction?.Invoke(this, new(_gestureOriginal, args.Phase) { Hit = args.Hit });
             return;
         }
         if (_gestureOriginal is null) return;
         if (args.Phase == InteractionPhase.Preview)
         {
             var start = Stopwatch.GetTimestamp();
-            _preview = args.Fence;
-            _fences[_gestureIndex] = args.Fence; // One immutable model replacement, no UI collection feedback.
+            _preview = ManualFence(args.Fence);
+            _fences[_gestureIndex] = _preview; // Keep the temporary hover lease out of durable state.
             if (_icons is not null && !args.Fence.Icons.IsEmpty && !args.Fence.IsCollapsed)
                 _icons.Preview(args.Fence, args.Hit != FenceHit.Header, _gestureScale,
                     () => RenderFence(args.Fence, _host.GetArea(), _gestureScale, live: true));
@@ -124,8 +244,9 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
             final = FenceIconLayout.Arrange(final, _icons?.Metrics ?? IconGridMetrics.Default, _gestureScale);
         if (_icons is not null && !final.Icons.IsEmpty)
         {
-            _icons.Preview(final, resize: false, _gestureScale,
-                () => RenderFence(final, _host.GetArea(), _gestureScale, live: true));
+            var displayedFinal = DisplayFence(final);
+            _icons.Preview(displayedFinal, resize: false, _gestureScale,
+                () => RenderFence(displayedFinal, _host.GetArea(), _gestureScale, live: true));
             await _icons.WaitForPresentationAsync();
         }
         if (_disposed) return;
@@ -151,29 +272,32 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
             _host.InteractionEnabled = _interactionAllowed;
             // A ViewModel save failure can replace the durable model with the original
             // while callbacks are gated. Restore its icons before resuming observation.
-            if (!_disposed && _fences.Any(f => _rendered.TryGetValue(f.Id, out var state) && state.Fence != f)) _icons?.SetFences(_fences);
+            if (!_disposed && _fences.Any(f => _rendered.TryGetValue(f.Id, out var state) && state.Fence != DisplayFence(f))) _icons?.SetFences(DisplayFences());
             Reconcile(discover: false);
+            RefreshHoverPointer();
         }
     }
     private async void OnCollapseRequested(Fence original)
     {
         if (_disposed || !_interactionAllowed || IsPresentingTransition || _gestureOriginal is not null) return;
         if (!_indices.TryGetValue(original.Id, out var index)) return;
+        var displayedOriginal = original;
+        _hoverStates.TryGetValue(original.Id, out var hover);
+        hover?.ManualAction();
+        var temporaryExpanded = hover?.Expanded == true;
         var started = Stopwatch.GetTimestamp(); long visualCompletedAt = 0;
         IsPresentingTransition = true; _host.InteractionEnabled = false;
         if (_icons is not null) _icons.InteractionActive = true;
         ConnectionChanged?.Invoke(this, EventArgs.Empty);
-        var next = original.ToggleCollapsed(); var proposed = _fences.ToArray(); proposed[index] = next;
+        var next = temporaryExpanded ? _fences[index] : original.ToggleCollapsed();
+        var proposed = _fences.ToArray(); proposed[index] = next;
+        hover?.Presented(false);
         try
         {
-            await FenceVisualTransaction.ExecuteAsync(original, next, async fence =>
+            await FenceVisualTransaction.ExecuteAsync(displayedOriginal, next, async fence =>
             {
-                if (_icons is not null)
-                {
-                    await _icons.PresentTransitionAsync(fence, () => RenderFence(fence, _host.GetArea(), _host.GetScale(fence), live: true));
-                    visualCompletedAt = _icons.LastPresentationAt;
-                }
-                else { RenderFence(fence, _host.GetArea(), _host.GetScale(fence), live: true); _host.FlushDamage(); visualCompletedAt = Stopwatch.GetTimestamp(); }
+                await PresentFenceTransitionAsync(fence);
+                visualCompletedAt = Stopwatch.GetTimestamp();
             }, async () =>
             {
 #if DEBUG
@@ -185,13 +309,87 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
                 return !_disposed && RequestStateChange(proposed);
             });
         }
-        catch (Exception error) { _logger.LogWarning(error, "Fence hide/show failed and original presentation was requested"); Publish(Connection with { Error = error.Message }); }
+        catch (Exception error) { hover?.Presented(temporaryExpanded); _logger.LogWarning(error, "Fence hide/show failed and original presentation was requested"); Publish(Connection with { Error = error.Message }); }
         finally
         {
+            _animatedHeight = null;
             IsPresentingTransition = false; if (_icons is not null) _icons.InteractionActive = false;
             _host.InteractionEnabled = _interactionAllowed; ConnectionChanged?.Invoke(this, EventArgs.Empty);
             Reconcile(discover: false);
+            RefreshHoverPointer();
         }
+    }
+    private async Task PresentFenceTransitionAsync(Fence target)
+    {
+        if (_disposed || _animator.IsDisposed) throw new OperationCanceledException("Desktop presentation is shutting down.");
+        var scale = _host.GetScale(target);
+        var endHeight = FenceInteractionGeometry.VisibleHeight(target, scale);
+        var startHeight = _animatedHeight is { } current && current.Id == target.Id ? current.Height :
+            _rendered.TryGetValue(target.Id, out var previous) ? FenceInteractionGeometry.VisibleHeight(previous.Fence, previous.Scale) : endHeight;
+        var seconds = target.IsCollapsed ? _settings?.CollapseAnimationSeconds ?? 0.14 : _settings?.ExpandAnimationSeconds ?? 0.18;
+        var area = _host.GetArea();
+        var projection = new FenceHeightAnimationGeometry(target, area);
+        Win32DesktopHost.HeightAnimation? nativeAnimation = null;
+        var hover = _host.GetHover(target.Id);
+        void Present(double height)
+        {
+            _animatedHeight = (target.Id, height);
+            if (nativeAnimation is not null)
+            {
+                var layout = projection.At(height) ?? throw new InvalidOperationException("Animation left the desktop area.");
+                nativeAnimation.Present(layout);
+                _rendered[target.Id] = (target, layout, scale, hover);
+            }
+            else { RenderFence(target, area, scale, live: true, visibleHeight: height); _host.FlushDamage(); }
+        }
+        async Task PositionIconsAsync(Action present)
+        {
+            if (_icons is not null) await _icons.PresentTransitionAsync(target, present);
+            else { present(); _host.FlushDamage(); }
+        }
+        if (seconds == 0 || Math.Abs(startHeight - endHeight) < 0.5)
+            await PositionIconsAsync(() => Present(endHeight));
+        else
+        {
+            var maximum = projection.At(Math.Max(startHeight, endHeight));
+            if (maximum is null) throw new InvalidOperationException("No visible Fence animation geometry.");
+            var presents = _host.BitmapPresentCount; var ulw = _host.LayeredUpdateMilliseconds;
+            var repaints = _host.RepaintCount; var allocations = _host.BitmapAllocationCount;
+            var rasterizations = _renderer.HeaderRasterizations;
+            var regions = _host.HeightGeometryUpdates; var regionTime = _host.HeightRegionMilliseconds;
+            using (nativeAnimation = _host.BeginHeightAnimation(target, maximum.Value, scale, _renderer.Render(target, maximum.Value, scale, hover)))
+            {
+                await using var iconAnimation = _icons is null ? null : await _icons.BeginAnimatedTransitionAsync(target,
+                    startHeight <= FenceInteractionGeometry.HeaderHeight * scale + 1);
+                var frameRepaints = _host.RepaintCount;
+                var frameAllocations = _host.BitmapAllocationCount; var frameRasterizations = _renderer.HeaderRasterizations;
+                if (iconAnimation is null) await _animator.AnimateAsync(startHeight, endHeight, seconds, Present);
+                else await _animator.AnimateFramesAsync(startHeight, endHeight, seconds, frame =>
+                {
+                    var layout = projection.At(frame.Height) ?? throw new InvalidOperationException("Animation left the desktop area.");
+                    var headerBottom = (int)Math.Ceiling(target.Y + FenceInteractionGeometry.HeaderHeight * scale);
+                    var border = (int)Math.Ceiling(FenceInteractionGeometry.Border * scale);
+                    var content = new DesktopBounds(layout.X + border, headerBottom, Math.Max(0, layout.Width - 2 * border),
+                        Math.Max(0, layout.Y + layout.Height - border - headerBottom));
+                    return iconAnimation.PresentAsync(frame, content, () => Present(frame.Height));
+                });
+#if DEBUG
+                var metrics = _animator.LastMetrics;
+                _logger.LogInformation("Fence animation {Direction}: clock=DWM presentation; duration={Duration:F2}s; frames={Frames}; fps={Fps:F1}; interval avg/max={Average:F2}/{Maximum:F2}ms; coalesced={Coalesced}; estimated missed cadence={Missed}; geometry updates={GeometryUpdates}; ULW={UlwCount}; ULW total={UlwTime:F3}ms; region total={RegionTime:F3}ms; explicit SetWindowPos=0 calls/0ms; Explorer redraws during frames={FrameRedraws}, whole transition={Redraws}; DIB allocations prepared/frame={PreparedAllocations}/{FrameAllocations}; WPF header rasterizations prepared/frame={PreparedRasterizations}/{FrameRasterizations}",
+                    target.IsCollapsed ? "collapse" : "expand", seconds, metrics.Frames, metrics.Fps, metrics.AverageIntervalMs, metrics.MaximumIntervalMs,
+                    metrics.CoalescedFrames, metrics.EstimatedMissedCadenceFrames, _host.HeightGeometryUpdates - regions, _host.BitmapPresentCount - presents,
+                    _host.LayeredUpdateMilliseconds - ulw, _host.HeightRegionMilliseconds - regionTime, _host.RepaintCount - frameRepaints,
+                    _host.RepaintCount - repaints, frameAllocations - allocations, _host.BitmapAllocationCount - frameAllocations,
+                    frameRasterizations - rasterizations, _renderer.HeaderRasterizations - frameRasterizations);
+#endif
+#if DEBUG
+                if (iconAnimation is not null) _logger.LogInformation("Coupled icon animation performance: icons={Count}; bulk updates={Batches}; targeted redraws={Redraws}; frame commit total={Milliseconds:F3}ms; Shell/presentation={Shell:F3}ms; targeted paint={Paint:F3}ms; Shell finish={Finish:F3}ms at progress={Progress:F3}; stagger=0; one shared DWM progress; Explorer region unchanged",
+                    target.Icons.Length, iconAnimation.BulkUpdates, iconAnimation.Redraws, iconAnimation.PositionMilliseconds,
+                    iconAnimation.ShellMilliseconds, iconAnimation.RedrawMilliseconds, iconAnimation.ShellFinishMilliseconds, iconAnimation.IconCommitProgress);
+#endif
+            }
+        }
+        _animatedHeight = null;
     }
     private void OnInputTick(object? sender, EventArgs args)
     {
@@ -212,15 +410,20 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         try { DesktopShell.ShowDesktop(); }
         catch (Exception exception) { _logger.LogError(exception, "Show Desktop failed"); Publish(Connection with { Error = exception.Message }); }
     }
-    private void RenderFence(Fence fence, DesktopArea area, double scale, bool live = false)
+    private void RenderFence(Fence fence, DesktopArea area, double scale, bool live = false, double? visibleHeight = null)
     {
-        var layout = FenceSurfaceLayout.Clip(fence, area, scale);
+        // Intermediate height belongs to presentation only; model Height remains the normal height.
+        var geometry = visibleHeight is { } height
+            ? (fence.IsCollapsed ? fence.ToggleCollapsed() : fence).WithBounds(fence.X, fence.Y, fence.Width, height)
+            : fence;
+        var layout = FenceSurfaceLayout.Clip(geometry, area, scale);
         if (layout is null) return;
         var hover = _host.GetHover(fence.Id);
         var state = (fence, layout.Value, scale, hover);
         var exists = _rendered.TryGetValue(fence.Id, out var previous);
         if (exists && previous == state) return;
         if (exists && previous.Fence.Name == fence.Name && previous.Fence.X == fence.X && previous.Fence.Y == fence.Y &&
+            previous.Fence.Appearance == fence.Appearance &&
             previous.Fence.Width == fence.Width && previous.Fence.Height == fence.Height && previous.Fence.IsCollapsed == fence.IsCollapsed &&
             previous.Layout == layout.Value && previous.Scale == scale && previous.Hover == hover && _host.Contains(fence.Id))
         {
@@ -228,6 +431,7 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         }
         var repaint = !exists || (!live && !_host.Contains(fence.Id)) ||
             previous.Fence.Name != fence.Name || previous.Fence.IsCollapsed != fence.IsCollapsed ||
+            previous.Fence.Appearance != fence.Appearance ||
             previous.Fence.Width != fence.Width || previous.Fence.X - previous.Layout.X != fence.X - layout.Value.X ||
             previous.Fence.Y - previous.Layout.Y != fence.Y - layout.Value.Y ||
             previous.Layout.Width != layout.Value.Width || previous.Scale != scale || previous.Hover != hover;
@@ -253,7 +457,7 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
                 if (FenceSurfaceLayout.Clip(fence, area, scale) is null) continue;
                 visible.Add(fence.Id);
                 if (!_host.Contains(fence.Id)) _rendered.Remove(fence.Id);
-                RenderFence(fence, area, scale);
+                RenderFence(DisplayFence(fence), area, scale);
             }
             foreach (var removed in _rendered.Keys.Except(visible).ToArray())
             {
@@ -284,12 +488,16 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
     public void Dispose()
     {
         if (_disposed) return;
+        _animator.Dispose();
         _timer.Stop(); _timer.Tick -= OnTick; _inputTimer.Stop(); _inputTimer.Tick -= OnInputTick;
+        _hoverTimer.Stop(); _hoverTimer.Tick -= OnHoverDeadline;
+        _host.HoverPointerMoved -= OnHoverPointer;
+        if (_settings is not null) _settings.PropertyChanged -= OnPreferencesChanged;
         _icons?.Dispose();
         _reconciling = true; _host.Dispose();
         _host.Interaction -= OnInteraction; _host.VisualChanged -= OnVisualChanged;
         _host.CollapseRequested -= OnCollapseRequested;
-        if (_icons is not null) { _icons.StatusChanged -= OnIconStatusChanged; _icons.FramePresented -= OnFramePresented; }
+        if (_icons is not null) { _icons.StatusChanged -= OnIconStatusChanged; _icons.FramePresented -= OnFramePresented; _icons.GestureSettled -= RefreshHoverPointer; }
         _disposed = true; _rendered.Clear(); _renderer.Clear();
     }
     public async Task PrepareExitAsync()

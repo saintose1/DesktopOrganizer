@@ -148,7 +148,7 @@ assignment proposal=4, bulk=4, один Shell redraw completion; последу�
    назначаются все items; при необходимости Fence увеличивает высоту.
 3. Вынести весь set наружу; повторить in/out, collapse/expand и Fence drag/resize.
 
-Видео D:\demki\2026-10-02 22-52-39.mp4 разобрано: 47 секунд, 1920×1080/60 fps.
+Предоставленное пользователем видео разобрано: 47 секунд, 1920×1080/60 fps.
 Оно подтверждает, что прежние API/contract checks не означали правильного rendering
 реальных mouse/OLE gestures. Пользовательское fences.json не заменялось тестовым.
 

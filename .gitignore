@@ -5,6 +5,23 @@ artifacts/
 TestResults/
 coverage/
 *.log
+**/logs/
+**/benchmark-results/
+**/debug-output/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.dmp
+*.mdmp
+*.dump
+*.stackdump
+*.wer
+*.etl
+*.lnk
+animation.json
+cadence.json
+latency.json
 
 # IDE and user settings
 .vs/
@@ -17,12 +34,32 @@ coverage/
 # Local SDK and package caches
 .tools/
 .nuget/
+.dotnet/
+.cache/
+packages/
 
 # OS files and secrets
 Thumbs.db
 Desktop.ini
+.DS_Store
 .env
 .env.*
 !.env.example
 *.pfx
 *.publishsettings
+*.pem
+*.key
+*.p12
+
+# Runtime/user state (never part of source backup)
+fences.json
+fences.json.*
+settings.json
+settings.json.*
+parked-icons.json
+parked-icons.json.*
+desktop-presentation.json
+desktop-presentation.json.*
+appsettings.local.json
+appsettings.*.local.json
+launchSettings.json

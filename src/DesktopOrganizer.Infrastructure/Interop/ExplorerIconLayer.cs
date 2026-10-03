@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
+using DesktopOrganizer.Core.Desktop;
 
 namespace DesktopOrganizer.Infrastructure.Interop;
 
@@ -21,7 +22,8 @@ internal sealed class ExplorerIconLayer : IDisposable
     private bool _outlineMarquee;
     private bool _fenceCompositionEnabled;
     public bool NativeSelection => _nativeSelection;
-    private sealed record State(long Window, uint ExplorerPid, uint Extended, uint ListStyles, uint Background, uint TextBackground);
+    private sealed record State(long Window, uint ExplorerPid, uint Extended, uint ListStyles, uint Background, uint TextBackground,
+        bool RegionCaptured = false, byte[]? WindowRegion = null);
     public ExplorerIconLayer(DesktopHandles handles, DesktopDiscovery discovery, ILogger logger, string? recoveryPath, bool enabled = true, ExplorerInteractionTrace? trace = null, bool outlineMarquee = true)
     {
         _handles = handles; _discovery = discovery; _logger = logger; _recoveryPath = recoveryPath; _trace = trace;
@@ -144,6 +146,9 @@ internal sealed class ExplorerIconLayer : IDisposable
         NativeMethods.SendMessage(list, 0x1036, (nint)Mask, (nint)(state.ListStyles & Mask));
         NativeMethods.SendMessage(list, 0x1001, 0, (nint)state.Background);
         NativeMethods.SendMessage(list, 0x1026, 0, (nint)state.TextBackground);
+        // Compatibility with recovery journals from the previous animation implementation.
+        // Current transitions never change the Explorer window region.
+        if (state.RegionCaptured) DesktopIconRegionState.Restore(list, state.WindowRegion);
         Redraw(parentRepaint);
     }
     private void Redraw(bool parent)

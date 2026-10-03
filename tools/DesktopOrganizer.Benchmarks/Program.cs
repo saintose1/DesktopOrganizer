@@ -35,6 +35,8 @@ internal static class Program
         }
         if (args.Length == 1 && args[0] == "--icons-smoke") return DesktopSmoke.Run();
         if (args.Length == 1 && args[0] == "--rendering-smoke") return RenderingSmoke.Run();
+        if (args.Length == 1 && args[0] == "--rendering-smoke-background") return RenderingSmoke.Run(showDesktop: false);
+        if (args.Length == 1 && args[0] == "--animation-cadence") return AnimationCadenceSmoke.Run();
         if (args.Length == 1 && args[0] == "--input-hit-smoke") return InputHitSmoke.Run();
         var app = new Application();
         var discovery = new DesktopDiscovery(NullLogger<DesktopDiscovery>.Instance);

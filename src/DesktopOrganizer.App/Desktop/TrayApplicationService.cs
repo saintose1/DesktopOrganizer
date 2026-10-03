@@ -19,6 +19,8 @@ public sealed class TrayApplicationService : IDisposable
         _window = window; _tray = tray;
         _lifetime = new(Show, window.Hide, async () =>
         {
+            if (window.DataContext is MainWindowViewModel viewModel && !viewModel.FlushAppearanceChanges())
+                throw new InvalidOperationException("Не удалось сохранить оформление группы. Повторите выход после устранения ошибки записи.");
             window.IsEnabled = false;
             try { await desktop.PrepareExitAsync(); }
             finally { window.IsEnabled = true; }
@@ -46,7 +48,11 @@ public sealed class TrayApplicationService : IDisposable
     private void OnExit() => _window.Dispatcher.BeginInvoke(DispatcherPriority.Normal,
         new Action(async () => await _lifetime.ExitAsync())); // Finish native menu callback before destroying its owner.
     private void OnClosing(object? sender, CancelEventArgs args) => args.Cancel = !_lifetime.RequestWindowClose();
-    public void AllowSessionExit() => _lifetime.AllowSessionExit();
+    public void AllowSessionExit()
+    {
+        if (_window.DataContext is MainWindowViewModel viewModel) viewModel.FlushAppearanceChanges();
+        _lifetime.AllowSessionExit();
+    }
     public void Dispose()
     {
         _window.Closing -= OnClosing; _tray.OpenRequested -= OnOpen; _tray.ExitRequested -= OnExit;

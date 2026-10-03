@@ -5,8 +5,8 @@
 В PowerShell:
 
 ```powershell
-cd path\to\DesktopOrganizer
-& ./.tools/dotnet/dotnet.exe run --project src/DesktopOrganizer.App
+# Из корня клонированного репозитория
+dotnet run --project src/DesktopOrganizer.App
 ```
 
 Также можно открыть `src/DesktopOrganizer.App/bin/Debug/net10.0-windows/DesktopOrganizer.App.exe`.

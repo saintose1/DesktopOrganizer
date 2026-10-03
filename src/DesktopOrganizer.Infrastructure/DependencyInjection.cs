@@ -20,6 +20,8 @@ public static class DependencyInjection
         var logDirectory = Path.Combine(storageDirectory, "Logs");
         services.AddSingleton<IFenceStore>(provider => new JsonFenceStore(
             storageDirectory, provider.GetRequiredService<ILogger<JsonFenceStore>>()));
+        services.AddSingleton<Settings.IAppPreferencesStore>(provider => new Settings.JsonAppPreferences(
+            storageDirectory, provider.GetRequiredService<ILogger<Settings.JsonAppPreferences>>()));
         services.AddSingleton<DesktopDiscovery>();
         services.AddSingleton<ExplorerInteractionTrace>();
         services.AddSingleton<IIconRecoveryStore>(p => new JsonIconRecoveryStore(storageDirectory, p.GetRequiredService<ILogger<JsonIconRecoveryStore>>()));

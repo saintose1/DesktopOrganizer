@@ -10,6 +10,82 @@ namespace DesktopOrganizer.Tests;
 public sealed class MainWindowViewModelTests
 {
     [Fact]
+    public void AppearancePreviewIsLiveButSavesOneSnapshotForManySliderChanges()
+    {
+        var store = new FakeStore(); var desktop = new RecordingDesktop();
+        using var vm = new MainWindowViewModel(store, NullLogger<MainWindowViewModel>.Instance, desktop);
+        vm.CreateCommand.Execute(null);
+        for (var i = 0; i <= 100; i++) vm.AppearanceEditor.BodyOpacity = i;
+        vm.AppearanceEditor.Name = "Live title"; vm.AppearanceEditor.Bold = true;
+        Assert.Equal("Live title", Assert.Single(desktop.Last).Name);
+        Assert.True(vm.SelectedFence!.Appearance.Bold);
+        Assert.Equal(1, store.SaveCount);
+        Assert.True(vm.FlushAppearanceChanges());
+        Assert.Equal(2, store.SaveCount);
+        Assert.Equal(vm.SelectedFence.Appearance, Assert.Single(store.Result.Fences).Appearance);
+        Assert.True(vm.FlushAppearanceChanges()); Assert.Equal(2, store.SaveCount);
+    }
+
+    [Fact]
+    public void InvalidEditorDraftNeverReachesModelAndCanRecover()
+    {
+        var store = new FakeStore();
+        using var vm = ViewModel(store); vm.CreateCommand.Execute(null);
+        var original = vm.SelectedFence;
+        vm.AppearanceEditor.TextColor = "#FF";
+        Assert.True(vm.AppearanceEditor.HasError); Assert.Equal(original, vm.SelectedFence);
+        vm.AppearanceEditor.TextColor = "#FF0000";
+        Assert.False(vm.AppearanceEditor.HasError); Assert.Equal("#FF0000", vm.SelectedFence!.Appearance.TextColor);
+        vm.AppearanceEditor.FontSize = "NaN";
+        Assert.True(vm.AppearanceEditor.HasError); Assert.Equal(16, vm.SelectedFence.Appearance.FontSize);
+    }
+
+    [Fact]
+    public void FailedAppearanceWriteRollsBackDesktopAndModel()
+    {
+        var store = new FakeStore(); var desktop = new RecordingDesktop();
+        using var vm = new MainWindowViewModel(store, NullLogger<MainWindowViewModel>.Instance, desktop);
+        vm.CreateCommand.Execute(null); var original = vm.SelectedFence;
+        vm.AppearanceEditor.HeaderOpacity = 10; vm.AppearanceEditor.Name = "Preview";
+        store.FailSave = true;
+        Assert.False(vm.FlushAppearanceChanges());
+        Assert.Equal(original, vm.SelectedFence); Assert.Equal(original, Assert.Single(desktop.Last));
+        Assert.Equal(original, Assert.Single(store.Result.Fences)); Assert.True(vm.HasError);
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public void PendingStyleAndDesktopGestureShareOneCommitOrRollback(bool failSave)
+    {
+        var store = new FakeStore(); var desktop = new RecordingDesktop();
+        using var vm = new MainWindowViewModel(store, NullLogger<MainWindowViewModel>.Instance, desktop);
+        vm.CreateCommand.Execute(null); var durable = vm.SelectedFence!;
+        vm.AppearanceEditor.Italic = true; var styled = vm.SelectedFence!;
+        desktop.Gesture(styled, InteractionPhase.Started);
+        desktop.Gesture(styled.WithBounds(100, 100, 400, 300), InteractionPhase.Preview);
+        vm.FlushAppearanceChanges(); Assert.Equal(1, store.SaveCount);
+        store.FailSave = failSave;
+        desktop.Gesture(vm.SelectedFence!, InteractionPhase.Completed);
+        Assert.Equal(failSave ? durable : vm.SelectedFence, Assert.Single(store.Result.Fences));
+        Assert.Equal(failSave ? durable : vm.SelectedFence, Assert.Single(desktop.Last));
+        Assert.Equal(failSave ? 1 : 2, store.SaveCount);
+    }
+
+    [Fact]
+    public void PendingStyleFlushesOnSelectionAndSurvivesLegacyApply()
+    {
+        var store = new FakeStore();
+        using var vm = ViewModel(store); vm.CreateCommand.Execute(null); vm.CreateCommand.Execute(null);
+        var first = vm.Fences[0]; var secondId = vm.SelectedFence!.Id;
+        vm.AppearanceEditor.BodyColor = "#221133";
+        vm.SelectedFence = first;
+        Assert.Equal("#221133", store.Result.Fences.Single(f => f.Id == secondId).Appearance.BodyColor);
+        vm.SelectedFence = vm.Fences.Single(f => f.Id == secondId);
+        vm.X = "200"; vm.ApplyCommand.Execute(null);
+        Assert.Equal("#221133", vm.SelectedFence!.Appearance.BodyColor);
+    }
+
+    [Fact]
     public void DesktopPreviewUpdatesModelImmediatelyButSavesOnlyOnCompletion()
     {
         var store = new FakeStore();

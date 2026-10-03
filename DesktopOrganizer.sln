@@ -21,6 +21,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DesktopOrganizer.Diagnostic
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DesktopOrganizer.Benchmarks", "tools\DesktopOrganizer.Benchmarks\DesktopOrganizer.Benchmarks.csproj", "{0357E874-E606-4215-9E98-6820CFF9B3C2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DesktopOrganizer.Branding", "tools\DesktopOrganizer.Branding\DesktopOrganizer.Branding.csproj", "{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -103,6 +105,18 @@ Global
 		{0357E874-E606-4215-9E98-6820CFF9B3C2}.Release|x64.Build.0 = Release|Any CPU
 		{0357E874-E606-4215-9E98-6820CFF9B3C2}.Release|x86.ActiveCfg = Release|Any CPU
 		{0357E874-E606-4215-9E98-6820CFF9B3C2}.Release|x86.Build.0 = Release|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Debug|x64.Build.0 = Debug|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Debug|x86.Build.0 = Debug|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Release|x64.ActiveCfg = Release|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Release|x64.Build.0 = Release|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Release|x86.ActiveCfg = Release|Any CPU
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -114,5 +128,6 @@ Global
 		{63AFEDEE-F1C2-4BDF-A3D7-2D28EDBF934C} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{92D72F11-BB12-48F9-A025-7E6C3F2E9351} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 		{0357E874-E606-4215-9E98-6820CFF9B3C2} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
+		{D8F6BC60-2F0A-466D-BEA2-EC5C6B87FCB5} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal

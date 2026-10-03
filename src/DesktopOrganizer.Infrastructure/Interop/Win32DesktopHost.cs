@@ -31,6 +31,10 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     private int _suppressExplorerPaint;
     public long RepaintCount { get; private set; }
     public long BitmapPresentCount => _windows.Values.Sum(s => s.Presents);
+    public double LayeredUpdateMilliseconds => _windows.Values.Sum(s => s.LayeredUpdateMilliseconds);
+    public long BitmapAllocationCount => _windows.Values.Sum(s => s.BitmapAllocations);
+    public long HeightGeometryUpdates => _windows.Values.Sum(s => s.HeightRegionUpdates);
+    public double HeightRegionMilliseconds => _windows.Values.Sum(s => s.HeightRegionMilliseconds);
     private nint _dpiContext;
     private DesktopArea _area, _iconArea;
     private bool _interactionEnabled = true;
@@ -45,6 +49,22 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     public event Action<Guid>? VisualChanged;
     public event Action? IconPositionsChanged;
     public event Action<ExplorerPointerEvent>? ExplorerPointer;
+    public event Action<DesktopPoint, bool>? HoverPointerMoved;
+    public (DesktopPoint Point, bool OnDesktop) ReadHoverPointer()
+    {
+        if (Handles is null || !NativeMethods.IsWindow(Handles.IconList) || NativeMethods.ProcessOf(Handles.IconList) != Handles.ProcessId) return (default, false);
+        var point = GetPointer();
+        var target = NativeMethods.WindowFromPoint(point);
+        var onDesktop = target == Handles.IconList || target == Handles.DefView ||
+            _windows.Values.Any(surface => (surface.Frame == target || surface.Background == target) && OwnWindow(target));
+        return (new(point.X, point.Y), onDesktop);
+    }
+    private void OnHoverPointerMoved()
+    {
+        if (HoverPointerMoved is null) return;
+        var pointer = ReadHoverPointer();
+        HoverPointerMoved.Invoke(pointer.Point, pointer.OnDesktop);
+    }
     public bool HasExplorerGesture => _iconEvents.GestureActive;
     public void SetSelectionReader(IDesktopSelectionReader? reader) => _iconEvents.SelectionReader = reader;
     public bool IsNativeSelection => _iconLayer?.NativeSelection == true;
@@ -125,6 +145,8 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         _iconEvents.BackgroundPressClassified += OnBackgroundPressClassified;
         _iconEvents.Pointer -= OnExplorerPointer;
         _iconEvents.Pointer += OnExplorerPointer;
+        _iconEvents.PointerMoved -= OnHoverPointerMoved;
+        _iconEvents.PointerMoved += OnHoverPointerMoved;
         try { _iconEvents.Connect(Handles); }
         catch (Exception error) { _logger.LogWarning(error, "Desktop input/drop notifications unavailable; observation fallback remains active and connection will retry"); }
         _dpiContext = NativeMethods.GetWindowDpiAwarenessContext(SurfaceParent);
@@ -186,6 +208,34 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         surface.Dispose();
         if (_windows.Count == 0) _iconLayer?.SetEnabled(false);
         _logger.LogInformation("Destroyed desktop Fence {Id}", id);
+    }
+    public HeightAnimation BeginHeightAnimation(Fence fence, FenceSurfaceLayout maximum, double scale, byte[] header)
+    {
+        if (!_windows.TryGetValue(fence.Id, out var surface) || !Contains(fence.Id))
+            throw new InvalidOperationException("Animation requires existing validated Fence windows.");
+        using var dpi = new DesktopDpiScope(_dpiContext);
+        surface.PrepareHeightAnimation(fence, maximum, scale, header, GetHover(fence.Id), _area);
+        SyncFenceModel(fence);
+        return new HeightAnimation(this, surface, _dpiContext, SurfaceParent);
+    }
+    public sealed class HeightAnimation : IDisposable
+    {
+        private readonly Win32DesktopHost _host;
+        private readonly NativeFenceSurface _surface;
+        private readonly nint _dpiContext, _parent;
+        private bool _disposed;
+        internal HeightAnimation(Win32DesktopHost host, NativeFenceSurface surface, nint dpiContext, nint parent)
+        { _host = host; _surface = surface; _dpiContext = dpiContext; _parent = parent; }
+        public void Present(FenceSurfaceLayout layout)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_host.SurfaceParent != _parent || !OwnWindow(_surface.Frame) || !OwnWindow(_surface.Background) ||
+                NativeMethods.GetParent(_surface.Frame) != _parent || NativeMethods.GetParent(_surface.Background) != _parent)
+                throw new InvalidOperationException("Animation lost its validated desktop host.");
+            using var dpi = new DesktopDpiScope(_dpiContext);
+            _surface.PresentHeight(layout); // Compositor updates only: no ListView damage, invalidation or SetRedraw.
+        }
+        public void Dispose() { if (_disposed) return; _disposed = true; _surface.EndHeightAnimation(); }
     }
     public void Clear() { foreach (var id in _windows.Keys.ToArray()) Remove(id); }
     public void SetIcons(IReadOnlyList<DesktopIcon> icons)
@@ -276,20 +326,20 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         if (rectangles.Count == 0) return;
         var region = NativeMethods.CreateRectRgn(0, 0, 0, 0);
         if (region == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var part = NativeMethods.CreateRectRgn(0, 0, 0, 0);
         try
         {
+            if (part == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
             foreach (var rect in rectangles)
             {
-                var part = NativeMethods.CreateRectRgn(rect.X, rect.Y, rect.X + rect.Width, rect.Y + rect.Height);
-                if (part == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
-                try { if (NativeMethods.CombineRgn(region, region, part, 2) == 0) throw new Win32Exception(Marshal.GetLastWin32Error()); }
-                finally { NativeMethods.DeleteObject(part); }
+                Check(NativeMethods.SetRectRgn(part, rect.X, rect.Y, rect.X + rect.Width, rect.Y + rect.Height));
+                if (NativeMethods.CombineRgn(region, region, part, 2) == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
             }
             Check(NativeMethods.RedrawWindow(Handles.IconList, 0, region, 0x145)); // INVALIDATE | ERASE | UPDATENOW | NOCHILDREN. Clear old glyphs with the transparent key, never repaint the whole desktop.
             Trace.Mark("RedrawWindow.ListView.damage");
             RepaintCount++;
         }
-        finally { NativeMethods.DeleteObject(region); }
+        finally { if (part != 0) NativeMethods.DeleteObject(part); NativeMethods.DeleteObject(region); }
     }
     private void OnBackgroundPress() => PrepareNativeSelection();
     private void OnBackgroundPressClassified() { if (_probeNativeSelectionEnabled) _iconLayer?.PrepareBackgroundSelection(); }

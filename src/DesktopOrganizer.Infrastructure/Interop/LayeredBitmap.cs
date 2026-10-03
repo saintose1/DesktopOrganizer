@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 namespace DesktopOrganizer.Infrastructure.Interop;
 
@@ -9,6 +10,9 @@ internal sealed unsafe class LayeredBitmap : IDisposable
     public nint Dc { get; } = NativeMethods.CreateCompatibleDC(0);
     private nint _bitmap, _previous, _bits;
     private int _width, _height;
+    public long Presents { get; private set; }
+    public double PresentMilliseconds { get; private set; }
+    public long Allocations { get; private set; }
     public bool Ensure(int width, int height, uint fill)
     {
         if (Dc == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -19,6 +23,7 @@ internal sealed unsafe class LayeredBitmap : IDisposable
         if (capacityWidth < 1 || capacityHeight < 1 || (long)capacityWidth * capacityHeight > 16_777_216) throw new InvalidOperationException("Native bitmap safety limit exceeded.");
         var info = new NativeMethods.BitmapInfo { Size = 40, Width = capacityWidth, Height = -capacityHeight, Planes = 1, BitCount = 32 };
         var bitmap = NativeMethods.CreateDIBSection(Dc, ref info, 0, out var bits, 0, 0);
+        Allocations++;
         if (bitmap == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
         var previous = NativeMethods.SelectObject(Dc, bitmap);
         if (previous == 0 || previous == -1) { NativeMethods.DeleteObject(bitmap); throw new Win32Exception(Marshal.GetLastWin32Error()); }
@@ -32,7 +37,10 @@ internal sealed unsafe class LayeredBitmap : IDisposable
     {
         var destination = new NativeMethods.Point(x, y); var size = new NativeMethods.Size(width, height);
         var source = new NativeMethods.Point(); var blend = new NativeMethods.Blend { Alpha = 255, AlphaFormat = 1 };
-        if (!NativeMethods.UpdateLayeredWindow(window, 0, ref destination, ref size, Dc, ref source, 0, ref blend, 2))
+        var started = Stopwatch.GetTimestamp();
+        var success = NativeMethods.UpdateLayeredWindow(window, 0, ref destination, ref size, Dc, ref source, 0, ref blend, 2);
+        PresentMilliseconds += Stopwatch.GetElapsedTime(started).TotalMilliseconds; Presents++;
+        if (!success)
             throw new Win32Exception(Marshal.GetLastWin32Error());
     }
     public void Dispose()

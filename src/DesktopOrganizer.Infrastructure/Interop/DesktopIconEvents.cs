@@ -41,6 +41,7 @@ internal sealed class DesktopIconEvents : IDisposable
     public event Action? BackgroundPress;
     public event Action? BackgroundPressClassified;
     public event Action<ExplorerPointerEvent>? Pointer;
+    public event Action? PointerMoved;
     public DesktopIconEvents(ILogger logger, ExplorerInteractionTrace? trace = null) { _callback = OnEvent; _logger = logger; _trace = trace; }
     public void Connect(DesktopHandles? handles)
     {
@@ -88,6 +89,7 @@ internal sealed class DesktopIconEvents : IDisposable
                     using var dpi = new DesktopDpiScope();
                     // WM_INPUT's queued screen point preserves the press origin even if the cursor has since moved.
                     receiver.OnRawMouse(input.Mouse.Buttons, MouseMessagePoint.Unpack(NativeMethods.GetMessagePos()));
+                    receiver.PointerMoved?.Invoke();
                 }
             }
             catch (Exception error) { System.Diagnostics.Debug.WriteLine(error); }

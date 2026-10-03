@@ -7,7 +7,7 @@ namespace DesktopOrganizer.Infrastructure.Interop;
 
 /// <summary>UI-thread-owned notification icon and native menu. No desktop parent or overlay.</summary>
 [SupportedOSPlatform("windows")]
-public sealed class WindowsTrayIcon(ILogger<WindowsTrayIcon> logger) : IDisposable
+public sealed class WindowsTrayIcon(ILogger<WindowsTrayIcon> logger, string? iconPath = null) : IDisposable
 {
     private readonly ILogger<WindowsTrayIcon> _logger = logger;
     internal const uint Callback = 0x8000 + 73;
@@ -16,6 +16,8 @@ public sealed class WindowsTrayIcon(ILogger<WindowsTrayIcon> logger) : IDisposab
     private nint _window;
     private ushort _class;
     private uint _taskbarCreated;
+    private nint _icon;
+    private bool _ownsIcon;
     private readonly string _className = "DesktopOrganizer.Tray." + Guid.NewGuid().ToString("N");
     public event Action? OpenRequested;
     public event Action? ExitRequested;
@@ -23,13 +25,20 @@ public sealed class WindowsTrayIcon(ILogger<WindowsTrayIcon> logger) : IDisposab
     public void Start()
     {
         if (_window != 0) return;
+        if (iconPath is not null)
+        {
+            _icon = TrayNative.LoadImage(0, Path.GetFullPath(iconPath), 1, NativeMethods.GetSystemMetrics(49), NativeMethods.GetSystemMetrics(50), 0x10);
+            if (_icon == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "Не удалось загрузить иконку трея.");
+            _ownsIcon = true;
+        }
+        else _icon = TrayNative.LoadIcon(0, (nint)32512);
         var wc = new NativeMethods.WindowClass
         {
             Size = (uint)Marshal.SizeOf<NativeMethods.WindowClass>(), Procedure = _procedure,
             Instance = NativeMethods.GetModuleHandle(null), ClassName = _className
         };
         _class = NativeMethods.RegisterClassEx(ref wc);
-        if (_class == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (_class == 0) { Dispose(); throw new Win32Exception(Marshal.GetLastWin32Error()); }
         // Invisible top-level owner receives TaskbarCreated; message-only windows do not.
         _window = NativeMethods.CreateWindowEx(NativeMethods.ToolWindow | NativeMethods.NoActivate,
             _className, "DesktopOrganizer tray", 0x80000000, 0, 0, 0, 0, 0, 0, wc.Instance, 0);
@@ -44,7 +53,7 @@ public sealed class WindowsTrayIcon(ILogger<WindowsTrayIcon> logger) : IDisposab
     {
         Size = (uint)Marshal.SizeOf<TrayNative.IconData>(), Window = _window, Id = 1,
         Flags = 1 | 2 | 4 | 0x80, CallbackMessage = Callback,
-        Icon = TrayNative.LoadIcon(0, (nint)32512), Tip = "DesktopOrganizer",
+        Icon = _icon, Tip = "DesktopOrganizer",
         Info = "", InfoTitle = "", Version = 4
     };
     private void AddIcon()
@@ -106,12 +115,16 @@ public sealed class WindowsTrayIcon(ILogger<WindowsTrayIcon> logger) : IDisposab
             Owners.Remove(_window); NativeMethods.DestroyWindow(_window); _window = 0;
         }
         if (_class != 0) { NativeMethods.UnregisterClass(_className, NativeMethods.GetModuleHandle(null)); _class = 0; }
+        if (_ownsIcon && _icon != 0) TrayNative.DestroyIcon(_icon);
+        _icon = 0; _ownsIcon = false;
         GC.KeepAlive(_procedure);
     }
 }
 
 internal static class TrayNative
 {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern nint LoadImage(nint instance, string name, uint type, int width, int height, uint flags);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool DestroyIcon(nint icon);
     [StructLayout(LayoutKind.Sequential)] internal struct IconIdentifier { public uint Size; public nint Window; public uint Id; public Guid Guid; }
     [DllImport("shell32.dll", EntryPoint = "Shell_NotifyIconGetRect")]
     internal static extern int GetIconRect(ref IconIdentifier icon, out NativeMethods.Rect rect);

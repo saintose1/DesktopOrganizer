@@ -105,14 +105,16 @@ public sealed class JsonFenceStore(string dataDirectory, ILogger<JsonFenceStore>
         public required double Width { get; init; }
         public required double Height { get; init; }
         public bool IsCollapsed { get; init; } // Optional for files written by earlier versions.
+        public FenceAppearance? Appearance { get; init; } // Missing in legacy JSON: use original visuals.
         public IconDocument[] Icons { get; init; } = []; // Migration of both previous milestones.
         public Fence ToFence() => new(Id, Name, X, Y, Width, Height, IsCollapsed,
             (Icons ?? throw new JsonException("Icons cannot be null.")).Select(i =>
-                (i ?? throw new JsonException("Icon assignment cannot be null.")).ToAssignment()));
+                (i ?? throw new JsonException("Icon assignment cannot be null.")).ToAssignment()), Appearance);
         public static FenceDocument FromFence(Fence fence) => new()
         {
             Id = fence.Id, Name = fence.Name, X = fence.X, Y = fence.Y, Width = fence.Width, Height = fence.Height,
             IsCollapsed = fence.IsCollapsed,
+            Appearance = fence.Appearance,
             Icons = fence.Icons.Select(i => new IconDocument { StableId = i.StableId, DisplayName = i.DisplayName, OffsetX = i.OffsetX, OffsetY = i.OffsetY }).ToArray()
         };
     }

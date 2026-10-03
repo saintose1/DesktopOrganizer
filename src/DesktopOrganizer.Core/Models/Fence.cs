@@ -15,9 +15,10 @@ public sealed record Fence
     // Height is always the normal (expanded) height, including while collapsed.
     public bool IsCollapsed { get; private init; }
     public ImmutableArray<DesktopIconAssignment> Icons { get; private init; } = [];
+    public FenceAppearance Appearance { get; private init; }
 
     public Fence(Guid id, string name, double x, double y, double width, double height, bool isCollapsed = false,
-        IEnumerable<DesktopIconAssignment>? icons = null)
+        IEnumerable<DesktopIconAssignment>? icons = null, FenceAppearance? appearance = null)
     {
         if (id == Guid.Empty)
             throw new ArgumentException("Идентификатор группы не может быть пустым.", nameof(id));
@@ -32,6 +33,7 @@ public sealed record Fence
         Width = width;
         Height = height;
         IsCollapsed = isCollapsed;
+        Appearance = appearance ?? FenceAppearance.Default;
         if (icons is not null) Icons = ValidateIcons(icons);
     }
 
@@ -42,6 +44,8 @@ public sealed record Fence
     }
     public Fence ToggleCollapsed() => this with { IsCollapsed = !IsCollapsed };
     public Fence WithIcons(IEnumerable<DesktopIconAssignment> icons) => this with { Icons = ValidateIcons(icons) };
+    public Fence WithPresentation(string name, FenceAppearance appearance) => new(Id, name, X, Y, Width, Height, IsCollapsed, Icons,
+        appearance ?? throw new ArgumentNullException(nameof(appearance)));
     private static void ValidateBounds(double x, double y, double width, double height)
     {
         if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentException("Координаты должны быть конечными числами.");

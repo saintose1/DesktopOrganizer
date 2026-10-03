@@ -9,6 +9,17 @@ using Microsoft.Extensions.Logging.Abstractions;
 using DesktopOrganizer.Core.Models;
 using Microsoft.Extensions.Logging;
 
+try { return await RunAsync(args); }
+catch (Exception error)
+{
+    // A missing desktop/tray in a restricted session is a failed diagnostic,
+    // not an unhandled .NET crash/dialog on the user's desktop.
+    Console.Error.WriteLine($"DesktopOrganizer diagnostic failed: {error.GetType().Name}: {error.Message}");
+    return 1;
+}
+
+static async Task<int> RunAsync(string[] args)
+{
 var discovery = new DesktopDiscovery(NullLogger<DesktopDiscovery>.Instance);
 if (args.Length == 2 && args[0] is "--tray-state" or "--tray-open" or "--tray-exit" or "--tray-menu")
 {
@@ -237,6 +248,8 @@ if (args.Length == 2 && args[0] == "--capture-directory")
     }
 }
 return 0;
+
+}
 
 internal sealed class DiagnosticTraceLogger : ILogger<ExplorerInteractionTrace>
 {

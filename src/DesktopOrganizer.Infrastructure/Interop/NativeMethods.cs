@@ -46,7 +46,12 @@ internal static class NativeMethods
     }
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool SetLayeredWindowAttributes(nint window, uint color, byte alpha, uint flags);
     [DllImport("user32.dll", SetLastError = true)] internal static extern int SetWindowRgn(nint window, nint region, bool redraw);
+    [DllImport("user32.dll")] internal static extern int GetWindowRgn(nint window, nint region);
+    [DllImport("gdi32.dll")] internal static extern uint GetRegionData(nint region, uint size, [Out] byte[]? data);
+    [DllImport("gdi32.dll")] internal static extern nint ExtCreateRegion(nint transform, uint size, byte[] data);
+    [DllImport("shell32.dll")] internal static extern nint ILClone(nint pidl);
     [DllImport("gdi32.dll")] internal static extern nint CreateRectRgn(int left, int top, int right, int bottom);
+    [DllImport("gdi32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetRectRgn(nint region, int left, int top, int right, int bottom);
     [DllImport("gdi32.dll")] internal static extern int CombineRgn(nint destination, nint first, nint second, int operation);
     [DllImport("gdi32.dll")] internal static extern nint CreateSolidBrush(uint color);
     [DllImport("user32.dll")] internal static extern int FillRect(nint dc, ref Rect rect, nint brush);

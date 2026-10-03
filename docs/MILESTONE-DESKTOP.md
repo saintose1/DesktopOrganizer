@@ -43,8 +43,8 @@ Microsoft не предоставляет стабильного публичн�
 ## Запуск
 
 ```powershell
-cd path\to\DesktopOrganizer
-& ./.tools/dotnet/dotnet.exe run --project src/DesktopOrganizer.App
+# Из корня клонированного репозитория
+dotnet run --project src/DesktopOrganizer.App
 ```
 
 Для отдельной папки тестовых данных:

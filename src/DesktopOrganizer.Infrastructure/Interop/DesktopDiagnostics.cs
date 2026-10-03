@@ -15,6 +15,14 @@ public sealed record DesktopInputDiagnostic(int X, int Y, string Capture, int Se
 [SupportedOSPlatform("windows")]
 public static class DesktopDiagnostics
 {
+    /// <summary>Fingerprint of the real Shell window region; animations must leave it unchanged.</summary>
+    public static string IconRegion(DesktopHandles handles)
+    {
+        if (!new DesktopDiscovery(Microsoft.Extensions.Logging.Abstractions.NullLogger<DesktopDiscovery>.Instance).Validate(handles))
+            throw new InvalidOperationException("Desktop host validation failed.");
+        var bytes = DesktopIconRegionState.Capture(handles.IconList);
+        return bytes is null ? "none" : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+    }
     /// <summary>Native tray inspection/callback replay, not a physical notification-area click.</summary>
     public static string TrayState(uint processId, bool open = false, bool exit = false, bool menu = false)
     {

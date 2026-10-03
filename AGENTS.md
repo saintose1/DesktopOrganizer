@@ -2,11 +2,11 @@
 
 ## Границы текущего этапа
 
-- Текущий milestone: системный трей и стабильная точка возврата перед редизайном UI.
-  Разрешено скрытие MainWindow, открытие из трея и безопасный полный выход.
-  Чтение и перемещение настоящих иконок уже разрешены; не менять их rendering/input.
+- Текущий milestone: синхронная анимация существующего Fence и настоящих Explorer icons.
+  Разрешены групповые Shell positioning только на время transition,
+  без общего редизайна, рефакторинга или замены штатного Explorer input.
 - Не создавать WPF-копии иконок; сохранять штатные клики и OLE drag Explorer.
-- Не добавлять scrolling, auto-sort, контекстные меню Fence и финальный дизайн.
+- Не добавлять scrolling, auto-sort, контекстные меню Fence и новые desktop behaviors.
   Контекстное меню трея содержит только открытие приложения и выход.
 - Не создавать полноэкранный overlay, не подменять Explorer, не внедрять DLL.
 - Не посылать undocumented сообщения Progman для создания WorkerW.
@@ -29,6 +29,21 @@
   сохранять один снимок после отпускания мыши; при ошибке записи или отмене
   возвращать модель и поверхность к состоянию до начала жеста.
 - Height всегда означает нормальную развёрнутую высоту, IsCollapsed задаёт отображение.
+- Промежуточная высота анимации принадлежит только presentation, не модели и JSON.
+  Иконки используют тот же progress/easing, что и Fence, без отдельного timer/polling.
+  Offscreen parking не включать в видимую траекторию. Показывать glyph только когда
+  он полностью помещается в текущем content; иначе оставлять/возвращать в parking.
+  Максимум один bulk Shell positioning и один targeted redraw на изменившийся кадр.
+  Не переключать SetRedraw(false/true) на кадрах. При постоянно включённом redraw
+  завершать icon transaction одним SetRedraw(true), включая failure/cleanup:
+  collapse — при уходе последнего glyph в parking, expand — на финальном кадре.
+  Не пересоздавать HWND, Shell identities или bitmaps на каждом кадре.
+- Кадры collapse/expand обслуживать по composition cadence, без фиксированного sleep/timer loop.
+  DWM wait выполняется вне UI, native HWND — на UI; в очереди не более одного animation frame.
+  Кешировать DIB, DPI, геометрию и cloned Shell PIDLs на весь переход.
+  Пустой Fence не должен вызывать Explorer repaint на кадрах.
+  Не менять window region чужого ListView на кадрах или в конце transition.
+  Поддерживать восстановление region только из recovery journal предыдущей реализации.
 - Desktop collapse/expand: positioning → native presentation/repaint → verify → persist.
   При ошибке вернуть прежнее представление. Return journal вооружать заранее
   при startup/drop/end gesture, не на visual critical path.

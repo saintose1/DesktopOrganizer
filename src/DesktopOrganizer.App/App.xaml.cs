@@ -12,6 +12,7 @@ using Microsoft.Extensions.Configuration;
 using DesktopOrganizer.App.Desktop;
 using DesktopOrganizer.Core.Desktop;
 using DesktopOrganizer.Infrastructure.Interop;
+using DesktopOrganizer.Infrastructure.Settings;
 
 namespace DesktopOrganizer.App;
 
@@ -46,11 +47,15 @@ public partial class App : Application
                 return;
             }
             builder.Services.AddInfrastructure(dataDirectory);
+            builder.Services.AddSingleton<IStartupRegistration>(provider => new WindowsStartupRegistration(
+                Path.Combine(AppContext.BaseDirectory, "DesktopOrganizer.App.exe"), provider.GetRequiredService<ILogger<WindowsStartupRegistration>>()));
+            builder.Services.AddSingleton<SettingsViewModel>();
             builder.Services.AddSingleton<MainWindowViewModel>();
             builder.Services.AddSingleton<MainWindow>();
             builder.Services.AddSingleton<FenceBitmapRenderer>();
             builder.Services.AddSingleton<DesktopIntegrationService>();
-            builder.Services.AddSingleton<WindowsTrayIcon>();
+            builder.Services.AddSingleton(provider => new WindowsTrayIcon(provider.GetRequiredService<ILogger<WindowsTrayIcon>>(),
+                Path.Combine(AppContext.BaseDirectory, "Assets", "Branding", "tray.ico")));
             builder.Services.AddSingleton<TrayApplicationService>();
             builder.Services.AddSingleton<IDesktopIntegration>(provider => provider.GetRequiredService<DesktopIntegrationService>());
 
@@ -60,7 +65,7 @@ public partial class App : Application
 
             MainWindow = _host.Services.GetRequiredService<MainWindow>();
             _host.Services.GetRequiredService<TrayApplicationService>().Start();
-            MainWindow.Show();
+            if (!bool.TryParse(builder.Configuration["StartInTray"], out var startInTray) || !startInTray) MainWindow.Show();
             _host.Services.GetRequiredService<DesktopIntegrationService>().Start();
             _logger.LogInformation("DesktopOrganizer started");
         }
@@ -81,6 +86,7 @@ public partial class App : Application
         try
         {
             _logger?.LogInformation("DesktopOrganizer shutting down");
+            _host?.Services.GetService<MainWindowViewModel>()?.FlushAppearanceChanges();
             _host?.Services.GetService<TrayApplicationService>()?.Dispose();
             _host?.Services.GetService<DesktopIntegrationService>()?.Dispose();
             _host?.StopAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();

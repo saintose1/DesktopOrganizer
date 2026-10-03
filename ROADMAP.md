@@ -1,5 +1,48 @@
 # Roadmap
 
+## Приватный checkpoint v0.1.0
+
+- [x] README приведён к текущему Lavender HUD UI, customization, tray/autostart и animation pipeline.
+- [x] Пользовательское состояние, логи, dumps, SDK/cache и временные outputs исключены из Git.
+- Существующий `pre-ui-redesign-stable` сохраняется как точка возврата до UI.
+- Commit/tag `v0.1.0` предназначены для приватного source backup, без installer или публичных binaries.
+
+## Быстрый hover Fence
+
+- [x] Искусственные задержки временного раскрытия и сворачивания убраны (0 мс); один переход через Dispatcher без native timer floor.
+- [x] Повторные mouse move не перезапускают неизменившийся deadline.
+- [x] Сохранены защита активных gestures и ручное collapsed state.
+
+## Анимация collapse/expand
+
+- [x] Плавная высота stable native surfaces с ease-in/out, без изменения нормальной высоты модели.
+- [x] Независимые длительности раскрытия/сворачивания 0–3 с в Settings; 0 отключает анимацию.
+- [x] Сохранение в settings.json, совместимость с прежними настройками без новых полей.
+- [x] Настоящие icons и Fence используют один DWM progress/easing; один bulk/targeted redraw на изменившийся кадр.
+- [x] Локальный slide/reveal и parking по целым glyph bounds, без изменения region чужого ListView.
+- [x] Убран неустойчивый animation viewport; совместимость с legacy recovery journal сохранена.
+- [x] Collapse завершает Shell hide при уходе последнего glyph; в последних кадрах только Fence height, без отложенного Shell finish.
+- [x] Prepared Shell identities/coordinates, без SetRedraw(false) и JSON на кадрах; persistence после verification.
+- [x] Убран повторный SetRedraw(true) на кадрах: одно завершение на transition, без двойного Explorer repaint.
+- [x] Тесты easing, длительностей, сохранения, Dispatcher completion/cancellation и ошибок renderer.
+- [ ] Физическая проверка плавности hover/кнопки, icon gestures и Win+D после анимации.
+- [x] Animation cadence от DWM при скрытом WPF окне; coalescing очереди и абсолютное cubic easing.
+- [x] Cached height-only native presentation: без WPF rasterization и роста DIB; пустой Fence без Explorer repaint.
+- [x] Измерение 0,15/0,25/0,4 с, FPS/интервалов, ULW/region времени и количества repaint.
+- [x] Тесты coalescing, ошибок clock, поздних callbacks и абсолютной геометрии при дробных координатах/DPI.
+
+## Новый UI — Lavender HUD / MagicPath
+
+- [x] Приватный MagicPath-проект, референс и dog branding на canvas.
+- [x] Прототипы Fences и Settings, сборка и осмотр превью.
+- [x] Исходные branding/reference assets сохранены в проекте.
+- [x] Пользовательское согласование Lavender HUD.
+- [x] Перенос в WPF: navigation, reusable theme resources, MVVM Settings.
+- [x] Настоящий current-user autostart с чтением Windows state; GUI enable/readback/disable.
+- [x] Multi-size application/tray ICO и подключение к EXE/window/taskbar/tray.
+- [x] Debug/Release: 0 warnings/errors, 223 tests в каждой конфигурации. UI create/edit/restart, Settings, resize, hide/show проверены.
+- [ ] Финальная физическая проверка tray single click, Win+D, OLE multi-drag и всех desktop жестов после UI.
+
 ## Трей перед редизайном UI
 
 - [x] Постоянный native notification icon, один клик для существующего MainWindow.
@@ -8,7 +51,7 @@
 - [x] Graceful exit: завершение операций, возврат parked icons, освобождение Explorer properties.
 - [x] Unit tests lifetime; manual checklist в docs/MILESTONE-TRAY.md.
 - [x] Подготовлено проверенное состояние для stable commit и tag `pre-ui-redesign-stable`.
-- [ ] Редизайн UI по референсам — следующий отдельный этап.
+- [x] Редизайн главного UI по согласованному MagicPath Lavender HUD.
 
 ## Этап 1 — Каркас
 

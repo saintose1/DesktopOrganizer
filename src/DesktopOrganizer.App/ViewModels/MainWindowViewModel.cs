@@ -5,10 +5,11 @@ using DesktopOrganizer.Core.Models;
 using DesktopOrganizer.Core.Storage;
 using Microsoft.Extensions.Logging;
 using DesktopOrganizer.Core.Desktop;
+using System.Windows.Threading;
 
 namespace DesktopOrganizer.App.ViewModels;
 
-public sealed class MainWindowViewModel : ObservableObject
+public sealed class MainWindowViewModel : ObservableObject, IDisposable
 {
     private readonly IFenceStore _store;
     private readonly ILogger<MainWindowViewModel> _logger;
@@ -20,6 +21,17 @@ public sealed class MainWindowViewModel : ObservableObject
     private readonly IDesktopIntegration? _desktop;
     private Fence? _interactionOriginal;
     private bool _updatingFromDesktop;
+    private bool _isSettingsPage;
+    private Fence? _appearanceOriginal;
+    private readonly DispatcherTimer _appearanceSaveTimer;
+    public FenceAppearanceViewModel AppearanceEditor { get; }
+    public SettingsViewModel? Settings { get; }
+    public bool IsSettingsPage { get => _isSettingsPage; private set { if (SetProperty(ref _isSettingsPage, value)) OnPropertyChanged(nameof(IsFencesPage)); } }
+    public bool IsFencesPage => !IsSettingsPage;
+    public RelayCommand OpenFencesCommand { get; }
+    public RelayCommand OpenSettingsCommand { get; }
+    public string ConnectionLabel => _desktop?.Connection.Connected == true ? "Рабочий стол подключён" : "Подключение к рабочему столу…";
+    public bool IsDesktopConnected => _desktop?.Connection.Connected == true;
 
     public string Title => "DesktopOrganizer — группы";
     public string DesktopStatus => $"Desktop integration: {(_desktop?.Connection.Connected == true ? "Connected" : "Disconnected")} · Surfaces: {_desktop?.Connection.SurfaceCount ?? 0}";
@@ -47,6 +59,7 @@ public sealed class MainWindowViewModel : ObservableObject
             // ListBox temporarily clears selection when an immutable item is replaced.
             // Keep the editor draft during desktop preview; the replacement restores selection.
             if (_updatingFromDesktop && value is null) return;
+            if (!_updatingFromDesktop && _selectedFence?.Id != value?.Id) FlushAppearanceChanges();
             if (SetProperty(ref _selectedFence, value))
             {
                 ResetEditor();
@@ -67,11 +80,17 @@ public sealed class MainWindowViewModel : ObservableObject
     public RelayCommand DeleteCommand { get; }
     public RelayCommand ShowDesktopCommand { get; }
 
-    public MainWindowViewModel(IFenceStore store, ILogger<MainWindowViewModel> logger, IDesktopIntegration? desktop = null)
+    public MainWindowViewModel(IFenceStore store, ILogger<MainWindowViewModel> logger, IDesktopIntegration? desktop = null, SettingsViewModel? settings = null)
     {
         _store = store;
         _logger = logger;
         _desktop = desktop;
+        AppearanceEditor = new FenceAppearanceViewModel(PreviewAppearance);
+        _appearanceSaveTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(650) };
+        _appearanceSaveTimer.Tick += OnAppearanceSaveTick;
+        Settings = settings;
+        OpenFencesCommand = new(() => IsSettingsPage = false);
+        OpenSettingsCommand = new(() => { Settings?.Refresh(); IsSettingsPage = true; });
         Fences = new ReadOnlyObservableCollection<Fence>(_fences);
         CreateCommand = new RelayCommand(Create, () => _canWrite && _interactionOriginal is null && _desktop?.IsPresentingTransition != true);
         ApplyCommand = new RelayCommand(Apply, () => CanEdit);
@@ -87,6 +106,8 @@ public sealed class MainWindowViewModel : ObservableObject
         if (_desktop is not null) _desktop.ConnectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(DesktopStatus));
+            OnPropertyChanged(nameof(ConnectionLabel));
+            OnPropertyChanged(nameof(IsDesktopConnected));
             OnPropertyChanged(nameof(DesktopDiagnostics));
             OnPropertyChanged(nameof(IconStatus));
             ShowDesktopCommand.NotifyCanExecuteChanged();
@@ -101,6 +122,7 @@ public sealed class MainWindowViewModel : ObservableObject
 
     private void Create()
     {
+        if (!FlushAppearanceChanges()) return;
         var number = 1;
         while (_fences.Any(fence => fence.Name == $"Группа {number}")) number++;
         var fence = new Fence(Guid.NewGuid(), $"Группа {number}", 0, 0, 300, 200);
@@ -111,12 +133,13 @@ public sealed class MainWindowViewModel : ObservableObject
 
     private void Apply()
     {
+        if (!FlushAppearanceChanges()) return;
         if (SelectedFence is null) return;
         Fence replacement;
         try
         {
             replacement = new Fence(SelectedFence.Id, Name,
-                Parse(X, "X"), Parse(Y, "Y"), Parse(Width, "Ширина"), Parse(Height, "Высота"), SelectedFence.IsCollapsed, SelectedFence.Icons);
+                Parse(X, "X"), Parse(Y, "Y"), Parse(Width, "Ширина"), Parse(Height, "Высота"), SelectedFence.IsCollapsed, SelectedFence.Icons, SelectedFence.Appearance);
             replacement = _desktop?.NormalizeFence(SelectedFence, replacement) ?? replacement;
         }
         catch (ArgumentException exception) { Error = exception.Message; return; }
@@ -131,6 +154,7 @@ public sealed class MainWindowViewModel : ObservableObject
 
     private void Delete()
     {
+        if (!FlushAppearanceChanges()) return;
         if (SelectedFence is null) return;
         var removed = SelectedFence;
         var index = _fences.IndexOf(removed);
@@ -163,6 +187,7 @@ public sealed class MainWindowViewModel : ObservableObject
         if (current is null) return;
         if (args.Phase == InteractionPhase.Started)
         {
+            _appearanceSaveTimer.Stop(); // Commit pending style with the completed gesture, never mid-drag.
             if (_interactionOriginal is not null) return;
             _interactionOriginal = current;
             NotifyInteractionCommands();
@@ -183,12 +208,18 @@ public sealed class MainWindowViewModel : ObservableObject
         {
             ReplaceFence(original);
             Status = "Изменение отменено.";
+            FlushAppearanceChanges();
         }
-        else if (current != original && !TrySave(_fences.ToArray()))
+        else if (current != original || _appearanceOriginal is not null)
         {
-            var error = Error;
-            ReplaceFence(original);
-            Error = error;
+            if (!TrySave(_fences.ToArray()))
+            {
+                var error = Error;
+                ReplaceFence(_appearanceOriginal ?? original);
+                AppearanceEditor.Load(SelectedFence);
+                Error = error;
+            }
+            _appearanceOriginal = null;
         }
         _desktop?.SetFences(_fences.ToArray());
     }
@@ -197,7 +228,16 @@ public sealed class MainWindowViewModel : ObservableObject
     {
         if (!_canWrite || _interactionOriginal is not null || request.Fences.Count != _fences.Count) return;
         for (var i = 0; i < _fences.Count; i++) if (_fences[i].Id != request.Fences[i].Id) return;
-        if (!TrySave(request.Fences.ToArray())) return;
+        if (!TrySave(request.Fences.ToArray()))
+        {
+            if (_appearanceOriginal is { } original)
+            {
+                var error = Error; _appearanceOriginal = null; _appearanceSaveTimer.Stop();
+                ReplaceFence(original); _desktop?.SetFences(_fences.ToArray()); Error = error;
+            }
+            return;
+        }
+        _appearanceOriginal = null; _appearanceSaveTimer.Stop();
         var selectedId = SelectedFence?.Id;
         _updatingFromDesktop = true;
         try
@@ -238,12 +278,46 @@ public sealed class MainWindowViewModel : ObservableObject
 
     private void ResetEditor()
     {
+        AppearanceEditor.Load(SelectedFence);
         Name = SelectedFence?.Name ?? "";
         X = Format(SelectedFence?.X ?? 0);
         Y = Format(SelectedFence?.Y ?? 0);
         Width = Format(SelectedFence?.Width ?? 300);
         Height = Format(SelectedFence?.Height ?? 200);
         Error = "";
+    }
+    private void PreviewAppearance(string name, FenceAppearance appearance)
+    {
+        if (!CanEdit || SelectedFence is null) return;
+        var next = SelectedFence.WithPresentation(name, appearance);
+        if (next == SelectedFence) return;
+        _appearanceOriginal ??= SelectedFence;
+        _updatingFromDesktop = true;
+        try { ReplaceFence(next); Name = next.Name; }
+        finally { _updatingFromDesktop = false; }
+        _desktop?.SetFences(_fences.ToArray());
+        Status = "Предпросмотр. Изменения сохраняются автоматически.";
+        _appearanceSaveTimer.Stop(); _appearanceSaveTimer.Start();
+    }
+    private void OnAppearanceSaveTick(object? sender, EventArgs args) => FlushAppearanceChanges();
+    public bool FlushAppearanceChanges()
+    {
+        if (_interactionOriginal is not null || _desktop?.IsPresentingTransition == true) return true;
+        _appearanceSaveTimer.Stop();
+        if (_appearanceOriginal is not { } original) return true;
+        _appearanceOriginal = null;
+        if (TrySave(_fences.ToArray())) return true;
+        var error = Error;
+        ReplaceFence(original);
+        AppearanceEditor.Load(SelectedFence);
+        _desktop?.SetFences(_fences.ToArray());
+        Error = error;
+        return false;
+    }
+    public void Dispose()
+    {
+        _appearanceSaveTimer.Stop();
+        _appearanceSaveTimer.Tick -= OnAppearanceSaveTick;
     }
     private static string Format(double value) => value.ToString("G", CultureInfo.CurrentCulture);
     private static double Parse(string text, string field)
