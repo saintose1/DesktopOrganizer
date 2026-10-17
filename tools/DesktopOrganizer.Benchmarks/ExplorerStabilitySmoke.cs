@@ -39,7 +39,8 @@ internal static class ExplorerStabilitySmoke
         var desktopDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
         if (!Directory.Exists(desktopDirectory)) throw new InvalidOperationException("Current-user desktop directory is unavailable.");
         var owned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        using var native = Icons(diagnosticsPath);
+        var trace = new ExplorerInteractionTrace(new SmokeLogger<ExplorerInteractionTrace>(diagnosticsPath));
+        using var native = Icons(diagnosticsPath, trace);
         var initial = await Healthy(native);
         var originals = initial.Icons.Select(icon => new DesktopIconTarget(icon.StableId, icon.Position)).ToArray();
         File.WriteAllText(Path.Combine(directory, "original-positions.json"), JsonSerializer.Serialize(originals));
@@ -61,13 +62,31 @@ internal static class ExplorerStabilitySmoke
         {
             var paths = Enumerable.Range(0, 3).Select(CreateOwned).ToArray();
             var snapshot = await Healthy(native, current => paths.All(path => Find(current, path) is not null));
+            trace.Begin();
+            await native.ReconcileDropAsync(_ => []);
+            Check(trace.Snapshot.Any(p => p.Stage == "Drop.positions.cached"), "Stable drop refreshed actual positions using retained Shell identities");
+            trace.Complete("stable cached drop / no positioning");
+            var cachePath = CreateOwned(4);
+            using (var verifier = Icons(diagnosticsPath))
+            {
+                await Healthy(verifier, current => Find(current, cachePath) is not null);
+                trace.Begin();
+                await native.ReconcileDropAsync(current =>
+                { Check(Find(current, cachePath) is not null, "New identity cannot be omitted from a drop snapshot"); return []; });
+                Check(!trace.Snapshot.Any(p => p.Stage == "Drop.positions.cached"), "Changed inventory forced full enumeration before drop planning");
+                trace.Complete("inventory fallback / no positioning");
+                DeleteOwned(cachePath);
+                await Healthy(verifier, current => Find(current, cachePath) is null);
+                await native.ReconcileDropAsync(current =>
+                { Check(Find(current, cachePath) is null, "Deleted identity cannot survive a drop cache refresh"); return []; });
+            }
             Check(host.Connect(), "Validated real Explorer host available");
             observedHandles = host.Handles;
             var area = host.GetArea();
             sample = new(area.X + area.Width / 2, area.Y + area.Height * 3 / 4, Math.Min(180, area.Width / 8), Math.Min(100, area.Height / 8));
             DesktopShell.ShowDesktop(); await Task.Delay(250);
             CompositionState("before-surfaces");
-            wallpaperBaseline = Capture("before-surfaces");
+            wallpaperBaseline = await Capture("before-surfaces");
             var first = new Fence(Guid.NewGuid(), "Stability probe", area.X + area.Width / 3, area.Y + 80, Math.Min(620, area.Width / 3), 350,
                 icons: paths.Select(path => Find(snapshot, path)!).Select(icon => new DesktopIconAssignment(icon.StableId, icon.DisplayName, 0, 0)));
             first = FenceIconLayout.Arrange(first, snapshot.Metrics, host.GetScale(first));
@@ -84,11 +103,11 @@ internal static class ExplorerStabilitySmoke
             };
             desktop.SetFences(fences); desktop.Start();
             var coordinator = (DesktopIconCoordinator)typeof(DesktopIntegrationService).GetField("_icons", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(desktop)!;
-            await Positions(); CompositionState("after-surfaces"); Capture("after-surfaces");
+            await Positions(); CompositionState("after-surfaces"); await Capture("after-surfaces");
 
             var ordinaryPath = CreateOwned(3);
             await Healthy(native, current => Find(current, ordinaryPath) is not null);
-            await Task.Delay(350); CompositionState("after-new-desktop-item"); Capture("after-new-desktop-item");
+            await Task.Delay(350); CompositionState("after-new-desktop-item"); await Capture("after-new-desktop-item");
             Check(fences[0].Icons.Length == 3 && fences[1].Icons.IsEmpty, "New desktop item does not change existing assignments");
 
             var deletedId = Find(snapshot, paths[1])!.StableId;
@@ -110,6 +129,10 @@ internal static class ExplorerStabilitySmoke
             await Wait(() => renamed.Any(pair => FenceIconLayout.IdentityComparer.Equals(pair.After, renamedId)) &&
                 fences[0].Icons.Any(icon => FenceIconLayout.IdentityComparer.Equals(icon.StableId, renamedId)));
             Check(fences[0].Icons.Length == 2, "Actual Shell rename pair preserved assignment and order");
+
+            // The commit callback precedes transaction completion; do not inject the next fixture state into that transaction.
+            var applying = typeof(DesktopIconCoordinator).GetField("_applyingDrop", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            await Wait(() => !(bool)applying.GetValue(coordinator)!);
 
             // Split only owned fixtures so ordinary motion can exercise expanded and parked assignments together.
             fences = [fences[0].WithIcons([fences[0].Icons[0]]),
@@ -156,9 +179,9 @@ internal static class ExplorerStabilitySmoke
                 "One simulated Explorer batch plus one parking repair batch; no general Fence relayout");
             Check(before.SequenceEqual(fences) && File.ReadAllText(store.FilePath) == persisted,
                 "Parking repair preserved assignments and did not write Fence JSON");
-            Capture("after-ordinary-move");
+            await Capture("after-ordinary-move");
             await desktop.PrepareExitAsync(); desktop.Dispose(); desktop = null;
-            Capture("after-graceful-exit"); CompositionState("after-graceful-exit");
+            await Capture("after-graceful-exit"); CompositionState("after-graceful-exit");
             Console.WriteLine("PASS: Shell/API smoke completed. This was not physical OLE, double-click, marquee, uninstall, hover or animation verification.");
             Console.WriteLine("Smoke evidence: " + directory);
         }
@@ -220,8 +243,12 @@ internal static class ExplorerStabilitySmoke
         }
         async Task Positions() => await Healthy(native, current => IconPlacement.AtTargets(current,
             IconPlacement.Targets(fences, host.GetMonitorAreas(), current.Metrics)));
-        double? Capture(string label)
+        async Task<double?> Capture(string label)
         {
+            // Shell positions are synchronous, desktop composition is not. Sample a presented frame.
+            var presented = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (new DesktopCompositionClock().Subscribe(_ => presented.TrySetResult(), error => presented.TrySetException(error)))
+                await presented.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var hit = DesktopDiagnostics.WindowAt(new(sample.X + sample.Width / 2, sample.Y + sample.Height / 2));
             if (!hit.Contains("SysListView32") && !hit.Contains("SHELLDLL_DefView"))
             { Console.WriteLine("SKIP: " + label + " wallpaper sample is covered by another application."); return null; }
@@ -248,7 +275,8 @@ internal static class ExplorerStabilitySmoke
     }
     private static DesktopIcon? Find(DesktopIconSnapshot snapshot, string path) => snapshot.Icons.SingleOrDefault(icon =>
         FenceIconLayout.IdentityComparer.Equals(icon.StableId, path));
-    private static DesktopIconService Icons(string diagnosticsPath) => new(new SmokeLogger<DesktopIconService>(diagnosticsPath), new SmokeLogger<DesktopDiscovery>(diagnosticsPath));
+    private static DesktopIconService Icons(string diagnosticsPath, ExplorerInteractionTrace? trace = null) =>
+        new(new SmokeLogger<DesktopIconService>(diagnosticsPath), new SmokeLogger<DesktopDiscovery>(diagnosticsPath), trace);
     private static async Task<DesktopIconSnapshot> Healthy(DesktopIconService icons, Func<DesktopIconSnapshot, bool>? ready = null)
     {
         var started = Stopwatch.StartNew();

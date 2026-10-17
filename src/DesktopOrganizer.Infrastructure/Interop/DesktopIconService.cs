@@ -207,6 +207,8 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
         private readonly ILogger _logger;
         private readonly Dictionary<string, nint> _pidls = new(FenceIconLayout.IdentityComparer);
         private DesktopCoordinates _coordinates;
+        private DesktopIconSnapshot? _completeSnapshot;
+        private uint _completeDpi;
         private bool _restoreGrid;
         private readonly Action _positioned, _redrawn;
         private readonly ExplorerInteractionTrace? _trace;
@@ -421,8 +423,10 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
                 var canPosition = autoArrange == 1; // S_FALSE: auto-arrange is off.
                 var error = !canPosition ? "Отключите «Упорядочить значки автоматически» на рабочем столе для группировки иконок." :
                     failed > 0 ? $"Не удалось прочитать {failed} из {count} иконок: {firstFailure}" : null;
-                return new(true, canPosition, icons, new IconGridMetrics(stepX, stepY, itemWidth, itemHeight, offsetX, offsetY).Validated(), error,
+                var snapshot = new DesktopIconSnapshot(true, canPosition, icons, new IconGridMetrics(stepX, stepY, itemWidth, itemHeight, offsetX, offsetY).Validated(), error,
                     _restoreGrid ? "Сетка Explorer временно отключена; восстановится при закрытии приложения." : null);
+                if (error is null) { _completeSnapshot = snapshot; _completeDpi = NativeMethods.GetDpiForWindow(Handles.IconList); }
+                return snapshot;
             }
             finally { foreach (var pidl in newPidls.Values) Marshal.FreeCoTaskMem(pidl); }
         }
@@ -432,7 +436,7 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
             // Enumerate and compute the full proposal before freezing. Most drop-out
             // operations only change assignment and already have final Explorer
             // positions. They must not toggle redraw at all.
-            var snapshot = Read(cancellationToken);
+            var snapshot = ReadDropPositions(cancellationToken);
             if (!snapshot.Connected || !snapshot.CanPosition || snapshot.Error is not null)
                 throw new InvalidOperationException("Explorer drop snapshot is unavailable.");
             var targets = layout(snapshot);
@@ -441,6 +445,55 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
             RequireCompletedGesture();
             // Position prepares PIDLs/grid before the short false -> bulk -> true lease.
             Position(targets, cancellationToken, deferRedraw: true);
+        }
+        private DesktopIconSnapshot ReadDropPositions(CancellationToken cancellationToken)
+        {
+            _trace?.Mark("Drop.positions.begin");
+            try
+            {
+                var cached = _completeSnapshot;
+                if (cached is null || cached.Icons.Count != _pidls.Count || NativeMethods.GetDpiForWindow(Handles.IconList) != _completeDpi)
+                    return Read(cancellationToken);
+                using var dpi = new DesktopDpiScope(NativeMethods.GetWindowDpiAwarenessContext(Handles.Host));
+                using var memory = new RemoteListViewBuffer(Handles.ProcessId, _logger);
+                DesktopCoordinates Coordinates()
+                {
+                    var origin = new NativeMethods.Point();
+                    if (!NativeMethods.ClientToScreen(Handles.IconList, ref origin)) throw new InvalidOperationException("Desktop origin unavailable.");
+                    var view = SendMessage(Handles.IconList, 0x1029, 0, memory.Address(0)) != 0 ? memory.Read<NativeMethods.Point>(0) : new();
+                    return new(new(origin.X, origin.Y), new(view.X, view.Y));
+                }
+                bool SameInventory()
+                {
+                    Marshal.ThrowExceptionForHR(_shell.View.ItemCount(2, out var count));
+                    return count == cached.Icons.Count && (int)SendMessage(Handles.IconList, 0x1004, 0, 0) == count;
+                }
+                var coordinates = Coordinates();
+                var spacing = (long)SendMessage(Handles.IconList, 0x1033, 0, 0);
+                if (!SameInventory() || (spacing & 0xFFFF) != cached.Metrics.StepX || ((spacing >> 16) & 0xFFFF) != cached.Metrics.StepY)
+                    return Read(cancellationToken);
+                var icons = new DesktopIcon[cached.Icons.Count];
+                for (var i = 0; i < icons.Length; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var old = cached.Icons[i];
+                    Marshal.ThrowExceptionForHR(_shell.View.GetItemPosition(IdentityPidl(old.StableId), out var point));
+                    var screen = coordinates.ToScreen(new(point.X, point.Y));
+                    icons[i] = old with { ViewPosition = new(point.X, point.Y), Position = screen,
+                        Bounds = old.Bounds with { X = old.Bounds.X + screen.X - old.Position.X, Y = old.Bounds.Y + screen.Y - old.Position.Y } };
+                }
+                if (!SameInventory() || coordinates != Coordinates() || NativeMethods.GetDpiForWindow(Handles.IconList) != _completeDpi)
+                    return Read(cancellationToken);
+                var arrange = _shell.View.GetAutoArrange(); Marshal.ThrowExceptionForHR(arrange);
+                if (arrange != 1) return Read(cancellationToken);
+                _coordinates = coordinates;
+                _trace?.Mark("Drop.positions.cached", icons.Length);
+                return cached with { Icons = icons };
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error) when (error is COMException or InvalidOperationException)
+            { _trace?.Mark("Drop.positions.fallback"); return Read(cancellationToken); }
+            finally { _trace?.Mark("Drop.positions.end"); }
         }
         private void RequireCompletedGesture()
         {

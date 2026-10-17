@@ -37,6 +37,7 @@ public sealed class DesktopIconCoordinator : IDisposable
     private long _revision;
     private readonly ExplorerGesture _explorerGesture = new();
     private Task? _selectionRead;
+    private CancellationTokenSource? _observationRead;
     private bool _layoutDeferred;
     private bool _stopping;
     public ExplorerGesturePhase ExplorerPhase => _explorerGesture.Phase;
@@ -84,6 +85,7 @@ public sealed class DesktopIconCoordinator : IDisposable
         if (_disposed || _stopping) return;
         if (input.Phase == ExplorerPointerPhase.Pressed)
         {
+            _observationRead?.Cancel(); // Do not make the real gesture wait behind a full idle inventory read.
             if (input.SelectionSnapshot is null) _host.Trace.Begin();
             _previousMissing.Clear();
             _beforeExplorerDrag = _matched.Values.ToArray();
@@ -102,7 +104,7 @@ public sealed class DesktopIconCoordinator : IDisposable
         else if (input.Phase == ExplorerPointerPhase.Released)
         {
             _host.Trace.Mark("Gesture.release");
-            _explorerGesture.Release(input.Point, input.DesktopTarget); _releaseTimer.Start(); RequestObservation();
+            _explorerGesture.Release(input.Point, input.DesktopTarget); _releaseTimer.Start(); RequestObservation(DispatcherPriority.Input);
         }
         else if (input.Phase == ExplorerPointerPhase.Cancelled)
         {
@@ -139,25 +141,26 @@ public sealed class DesktopIconCoordinator : IDisposable
     private void OnReleaseTick(object? sender, EventArgs args)
     {
         if (ExplorerBusy()) return;
-        _releaseTimer.Stop(); RequestObservation();
+        _releaseTimer.Stop(); RequestObservation(DispatcherPriority.Input);
     }
-    private void RequestObservation()
+    private void RequestObservation(DispatcherPriority priority = DispatcherPriority.Background)
     {
         if (_disposed || _stopping) return;
         _requested = true;
         if (_reading || _moving || _scheduled) return;
         _scheduled = true;
-        _dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => { _scheduled = false; OnTick(this, EventArgs.Empty); }));
+        _dispatcher.BeginInvoke(priority, new Action(() => { _scheduled = false; OnTick(this, EventArgs.Empty); }));
     }
     private async void OnTick(object? sender, EventArgs args)
     {
         if (_disposed || _stopping || _reading || _moving || InteractionActive || _host.HasActiveInteraction) return;
         if (ExplorerBusy()) { _releaseTimer.Start(); return; }
         _reading = true; _requested = false;
+        var sequence = _explorerGesture.Sequence;
         try
         {
             if (_selectionRead is not null) await _selectionRead;
-            if (Busy()) return;
+            if (Busy() || _explorerGesture.Sequence != sequence) { RequestObservation(DispatcherPriority.Input); return; }
             _host.FinishNativeSelection();
             // Shell refresh can reset the ListView background before item enumeration becomes consistent.
             _host.ReconcileExplorerPresentation();
@@ -165,8 +168,10 @@ public sealed class DesktopIconCoordinator : IDisposable
                 _explorerGesture.Drop is { DesktopTarget: true } drop &&
                 (DropAffectsFence(drop) || _fences.Any(f => f.IsCollapsed && !f.Icons.IsEmpty)))
             { await ReconcileDropAsync(drop); return; }
-            var snapshot = await _icons.ReadAsync(_shutdown.Token);
-            if (Busy()) return;
+            _observationRead = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+            var snapshot = await _icons.ReadAsync(_observationRead.Token);
+            // An idle read started before a complete fast drag must not consume that newer drop.
+            if (Busy() || _explorerGesture.Sequence != sequence) { RequestObservation(DispatcherPriority.Input); return; }
             SetStatus($"Desktop icons: {(snapshot.Connected ? snapshot.Icons.Count.ToString() : "Disconnected")}" +
                 (snapshot.Error is null ? snapshot.Notice is null ? "" : " · " + snapshot.Notice : " · " + snapshot.Error));
             if (!snapshot.Connected) { _previousMissing.Clear(); _initialized = false; _positioningAvailable = false; return; }
@@ -198,9 +203,11 @@ public sealed class DesktopIconCoordinator : IDisposable
         }
         finally
         {
+            _observationRead?.Dispose(); _observationRead = null;
             _reading = false;
             if (_pending is not null && !_moving && !_disposed) MoveLatest();
-            else if (_requested) RequestObservation();
+            else if (_requested) RequestObservation(_explorerGesture.Phase == ExplorerGesturePhase.PostDropReconciliation
+                ? DispatcherPriority.Input : DispatcherPriority.Background);
         }
     }
     private bool DropAffectsFence(ExplorerDrop drop) => FenceIconLayout.DropTarget(_fences, drop.Point, _host.GetScale) is not null ||

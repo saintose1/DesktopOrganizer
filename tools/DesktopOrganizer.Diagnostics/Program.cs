@@ -29,6 +29,40 @@ if (args.Length == 2 && args[0] is "--tray-state" or "--tray-open" or "--tray-ex
 var desktop = discovery.Find();
 if (desktop is null) { Console.Error.WriteLine("No validated Explorer desktop host. " + discovery.LastDiagnostics); return 1; }
 Console.WriteLine(desktop);
+if (args.Length == 1 && args[0] == "--desktop-state")
+{
+    Console.WriteLine("ListView region=" + DesktopDiagnostics.IconRegion(desktop));
+    foreach (var line in DesktopDiagnostics.WallpaperWindowTree(desktop)) Console.WriteLine(line);
+    foreach (var area in DesktopDiagnostics.MonitorAreas())
+        foreach (var point in new[] { new DesktopPoint(area.X + 20, area.Y + 20), new DesktopPoint(area.X + area.Width / 2, area.Y + area.Height / 2), new DesktopPoint(area.X + area.Width - 100, area.Y + area.Height - 100) })
+            Console.WriteLine($"Hit at {point.X},{point.Y}: {DesktopDiagnostics.WindowAt(point)}");
+    return 0;
+}
+if (args.Length == 2 && args[0] == "--recover-desktop")
+{
+    foreach (var process in System.Diagnostics.Process.GetProcessesByName("DesktopOrganizer.App"))
+        using (process) throw new InvalidOperationException("Exit DesktopOrganizer before recovery.");
+    if (DesktopDiagnostics.Inspect(desktop).Count != 0) throw new InvalidOperationException("Live Fence surfaces prevent recovery.");
+    var directory = Path.GetFullPath(args[1]);
+    // Reuse the HWND/PID-validated crash journal; never guess another renderer's original properties.
+    using (var host = new Win32DesktopHost(discovery, NullLogger<Win32DesktopHost>.Instance, Path.Combine(directory, "desktop-presentation.json")))
+        if (!host.Connect()) throw new InvalidOperationException("Explorer recovery host unavailable.");
+    Console.WriteLine("Original Explorer presentation restored: " + DesktopDiagnostics.CompositionState(desktop));
+    using var icons = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
+    var snapshot = await icons.ReadAsync();
+    if (!snapshot.Connected || !snapshot.CanPosition || snapshot.Error is not null) throw new InvalidOperationException("Complete recovery snapshot unavailable.");
+    var journal = new JsonIconRecoveryStore(directory, NullLogger<JsonIconRecoveryStore>.Instance);
+    var present = FenceIconLayout.Match(snapshot.Icons);
+    var monitors = DesktopDiagnostics.MonitorAreas();
+    var targets = journal.Load().Where(t => present.TryGetValue(t.StableId, out var icon) &&
+        !monitors.Any(m => icon.Bounds.X < m.X + m.Width && icon.Bounds.X + icon.Bounds.Width > m.X &&
+            icon.Bounds.Y < m.Y + m.Height && icon.Bounds.Y + icon.Bounds.Height > m.Y)).ToArray();
+    if (targets.Length != 0) await icons.PositionDropAsync(targets);
+    if (!IconPlacement.AtTargets(await icons.ReadAsync(), targets)) throw new InvalidOperationException("Recovery position readback failed; journal retained.");
+    journal.Save([]);
+    Console.WriteLine($"Returned {targets.Length} parked icons to recorded return positions; visible desktop items unchanged.");
+    return 0;
+}
 if (args.Length == 1 && args[0] == "--redraw-visibility")
 {
     using var icons = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);

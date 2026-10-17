@@ -2,6 +2,8 @@
 
 ## Стабилизация Explorer — октябрь 2026
 
+- [ ] Критический exit/crash incident: после исчезновения процесса остаётся невидимый и mouse-transparent desktop layer. Пользовательский desktop восстановлен однократным разрешённым restart Explorer без изменения 65 позиций; причина завершения и предотвращение повторения ещё не подтверждены: [recovery](docs/EXPLORER-EXIT-RECOVERY.md).
+
 - [x] Локальная точка возврата `pre-explorer-stabilization-20261013`, пользовательские данные сохранены отдельно.
 - [x] Активация прозрачности ListView после создания/render/Z-order собственных поверхностей; обратимое восстановление исходных свойств.
 - [x] Восстановление сброшенных Explorer background/styles без записи позиций и без repaint исправного состояния.
@@ -10,9 +12,11 @@
 - [x] Drop layout ограничен изменившимися группами; обычный outside drop не пишет Fence JSON.
 - [x] Настоящий пользовательский drag подтвердил: Explorer переносит parked items в видимую сетку; отрицательная и положительная парковка одинаково нормализуются.
 - [x] Адресный возврат только вытолкнутых, не перетаскивавшихся items свёрнутых групп в их прежние координаты, в общей drop transaction без Arrange/JSON.
-- [x] Debug/Release: 358 tests, 0 warnings/errors; regression для наблюдавшегося OLE reflow и сохранности обычного drop point.
+- [x] Debug/Release: 359 tests, 0 warnings/errors; regression для наблюдавшегося OLE reflow, сохранности обычного drop point и отмены idle read при новом жесте.
 - [x] Пользователь подтвердил устранение постоянного выпадения после исправления parking lifecycle: [проверка](docs/FIX-NATIVE-OLE-PARKING.md).
 - [ ] Убрать короткую вспышку между native OLE reflow и parking commit.
+- [x] Ускорен post-drop snapshot через проверенные Shell identities; idle inventory read отменяется при press, release обслуживается с Input priority. Физическое отсутствие flash ещё не подтверждено.
+- [ ] Устранить воспроизведённый повторным native smoke чёрный фон при startup surfaces с Wallpaper Engine; не считать прошлый успешный pixel sample окончательной проверкой.
 - [x] Debug/Release: 0 warnings/errors, 350 tests; actual Shell/API smoke и восстановление всех 65 исходных позиций.
 - [ ] Подтверждение реальными mouse/OLE gestures с Wallpaper Engine: новый ярлык, обычный drag рядом с expanded/collapsed Fences, multi-drag и hover.
 - Отчёт и оставшиеся ручные проверки: [Explorer stabilization](docs/STABILIZATION-EXPLORER-20261017.md).

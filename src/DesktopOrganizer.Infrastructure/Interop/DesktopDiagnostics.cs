@@ -247,7 +247,9 @@ public static class DesktopDiagnostics
         void Add(nint window)
         {
             if (lines.Count >= 200) return;
-            lines.Add($"HWND=0x{window:X}; parent=0x{NativeMethods.GetParent(window):X}; class={NativeMethods.ClassOf(window)}; PID={NativeMethods.ProcessOf(window)}; visible={NativeMethods.IsWindowVisible(window)}; style=0x{NativeMethods.GetWindowStyle(window, -16):X}; ex=0x{NativeMethods.GetWindowStyle(window, -20):X}");
+            var attributes = NativeMethods.GetLayeredWindowAttributes(window, out var key, out var alpha, out var flags)
+                ? $"key=0x{key:X}; alpha={alpha}; flags=0x{flags:X}" : "none";
+            lines.Add($"HWND=0x{window:X}; parent=0x{NativeMethods.GetParent(window):X}; class={NativeMethods.ClassOf(window)}; PID={NativeMethods.ProcessOf(window)}; visible={NativeMethods.IsWindowVisible(window)}; style=0x{NativeMethods.GetWindowStyle(window, -16):X}; ex=0x{NativeMethods.GetWindowStyle(window, -20):X}; layered={attributes}");
         }
         NativeMethods.EnumWindows((window, _) =>
         {

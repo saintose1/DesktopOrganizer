@@ -51,3 +51,35 @@ Explorer самостоятельно вернул скрытые items на в�
 не требуется. При этом наблюдается короткая вспышка между native drop и parking commit;
 её устранение — следующий локальный rendering polish. Отсутствие видимой вспышки нельзя
 вывести из unit tests или readback координат.
+
+## Уменьшение post-drop задержки
+
+Локальный rollback перед polish: `pre-drop-flash-polish-20261017` (`158cc2b`).
+В пользовательских traces между release и layout proposal было 48–128 ms, затем
+возврат 52 items занимал примерно 6 ms. Полное чтение inventory и очередь фоновой
+observation оставляли вытолкнутые Explorer значки видимыми до нашего commit.
+
+- При press отменяется только текущий idle inventory read, не selection или drop.
+- Release и повтор после устаревшего read обслуживаются с Input priority.
+- Drop заново читает настоящие позиции retained Shell PIDLs, origin, spacing и DPI,
+  пропуская повторное чтение имён/текста/границ всех items. Количество Shell/ListView
+  items проверяется до/после. При смене inventory, DPI/origin или ошибке PIDL — full read.
+- Полный проверочный readback перед durable commit сохранён. Неполный старый read
+  не может завершить новый gesture. Пустой план не вызывает positioning/redraw.
+- Быстрый snapshot 68 items в actual Shell self-check: около 6–7 ms; fallback при
+  создании item около 15 ms. Это не измерение всей физической release-to-present latency.
+- Нового redraw lock, mouse hook или overlay нет. Bulk/redraw количество не выросло.
+
+Debug/Release: 0 warnings/errors, 359/359 tests. Новый scheduling regression проверяет,
+что отмена idle read не поглощает press/drag и не позиционирует icons. Native self-check
+прошёл fast snapshot и full fallback при добавлении/удалении собственного fixture.
+Отдельный `--icons-smoke` прошёл drop in/out, drag/resize, collapse/expand/restart и
+вернул все 65 исходных позиций. Это Shell/API replay, не физическая проверка flash.
+
+Повторный `--explorer-stability-smoke` остановился на чёрном wallpaper sample после
+создания surfaces, до parking-replay стадии; cleanup восстановил все позиции.
+Ожидание compositor frame и пробный дополнительный parent redraw это не устранили;
+неподтверждённый parent redraw в production не оставлен. A/B composition подтвердил
+зависимость от color-key ListView: key-only дал чёрный фон, full-key и native-transparent
+в отдельной серии сохранили wallpaper. Это отдельный незакрытый rendering риск,
+а не подтверждение устранения проблемы Wallpaper Engine.
