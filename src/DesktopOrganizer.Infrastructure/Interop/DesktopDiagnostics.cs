@@ -129,8 +129,12 @@ public static class DesktopDiagnostics
         Marshal.ThrowExceptionForHR(view.View.GetCurrentFolderFlags(out var flags));
         return $"FolderFlags=0x{flags:X}; IconListVisible={NativeMethods.IsWindowVisible(handles.IconList)}; ex=0x{NativeMethods.GetWindowStyle(handles.IconList, -20):X}; styles=0x{NativeMethods.SendMessage(handles.IconList, 0x1037, 0, 0):X}; bg=0x{NativeMethods.SendMessage(handles.IconList, 0x1000, 0, 0):X}";
     }
-    public static string CompositionState(DesktopHandles handles) =>
-        $"Visible={NativeMethods.IsWindowVisible(handles.IconList)}; ex=0x{NativeMethods.GetWindowStyle(handles.IconList, -20):X}; styles=0x{NativeMethods.SendMessage(handles.IconList, 0x1037, 0, 0):X}; bg=0x{NativeMethods.SendMessage(handles.IconList, 0x1000, 0, 0):X}; textBg=0x{NativeMethods.SendMessage(handles.IconList, 0x1025, 0, 0):X}";
+    public static string CompositionState(DesktopHandles handles)
+    {
+        var attributes = NativeMethods.GetLayeredWindowAttributes(handles.IconList, out var key, out var alpha, out var flags)
+            ? $"key=0x{key:X}; alpha={alpha}; flags=0x{flags:X}" : "none";
+        return $"Visible={NativeMethods.IsWindowVisible(handles.IconList)}; ex=0x{NativeMethods.GetWindowStyle(handles.IconList, -20):X}; styles=0x{NativeMethods.SendMessage(handles.IconList, 0x1037, 0, 0):X}; bg=0x{NativeMethods.SendMessage(handles.IconList, 0x1000, 0, 0):X}; textBg=0x{NativeMethods.SendMessage(handles.IconList, 0x1025, 0, 0):X}; layeredAttributes={attributes}";
+    }
     /// <summary>Actual lease/property transitions only, without synthesizing any Explorer mouse/OLE gesture.</summary>
     public static IReadOnlyList<string> CheckMarqueeCompositionLease(bool outline = true)
     {
@@ -218,6 +222,44 @@ public static class DesktopDiagnostics
     public static void SetProbeIconComposition(Win32DesktopHost host, bool enabled) => host.SetCompositionForProbe(enabled);
     public static void SetProbeNativeSelection(Win32DesktopHost host, bool enabled) => host.SetNativeSelectionForProbe(enabled);
     public static void SetProbeOutlineSelection(Win32DesktopHost host, bool enabled) => host.SetOutlineSelectionForProbe(enabled);
+    /// <summary>Diagnostic-only reversible modes; caller must dispose its host before trying another mode.</summary>
+    public static void SetWallpaperProbeMode(Win32DesktopHost host, string mode)
+    {
+        var handles = host.Handles ?? throw new InvalidOperationException("No desktop host.");
+        if (!new DesktopDiscovery(Microsoft.Extensions.Logging.Abstractions.NullLogger<DesktopDiscovery>.Instance).Validate(handles))
+            throw new InvalidOperationException("Desktop host validation failed.");
+        var key = mode is "key-only" or "full-key" or "key-transparent";
+        host.SetCompositionForProbe(key);
+        if (mode is "key-transparent" or "native-transparent")
+        {
+            NativeMethods.SendMessage(handles.IconList, 0x1036, 0x00400000, 0x00400000);
+            if (mode == "native-transparent") NativeMethods.SendMessage(handles.IconList, 0x1001, 0, -1);
+            if (!NativeMethods.RedrawWindow(handles.Host, 0, 0, 0x185)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        ShowOwnProbeLayers(host, mode is not "original" and not "header-only" and not "key-only",
+            mode is not "original" and not "body-only" and not "key-only");
+        host.EnsureStacking();
+    }
+    /// <summary>Read-only class/PID/style hierarchy; captions and filesystem paths are deliberately omitted.</summary>
+    public static IReadOnlyList<string> WallpaperWindowTree(DesktopHandles handles)
+    {
+        var lines = new List<string>();
+        void Add(nint window)
+        {
+            if (lines.Count >= 200) return;
+            lines.Add($"HWND=0x{window:X}; parent=0x{NativeMethods.GetParent(window):X}; class={NativeMethods.ClassOf(window)}; PID={NativeMethods.ProcessOf(window)}; visible={NativeMethods.IsWindowVisible(window)}; style=0x{NativeMethods.GetWindowStyle(window, -16):X}; ex=0x{NativeMethods.GetWindowStyle(window, -20):X}");
+        }
+        NativeMethods.EnumWindows((window, _) =>
+        {
+            if (window == handles.Progman || NativeMethods.ClassOf(window) == "WorkerW")
+            {
+                Add(window);
+                NativeMethods.EnumChildWindows(window, (child, _) => { Add(child); return lines.Count < 200; }, 0);
+            }
+            return lines.Count < 200;
+        }, 0);
+        return lines;
+    }
     public static IReadOnlyList<string> Layers(DesktopHandles handles)
     {
         using var dpi = new DesktopDpiScope();
@@ -285,6 +327,20 @@ public static class DesktopDiagnostics
         }, 0);
         return result;
     }
+
+    /// <summary>Publishes external filesystem changes for exclusively owned smoke fixtures; never changes files or icon positions.</summary>
+    public static void NotifySmokeItemChange(string path, string? renamedTo = null, bool deleted = false)
+    {
+        var desktop = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory));
+        foreach (var item in renamedTo is null ? new[] { path } : new[] { path, renamedTo })
+            if (!StringComparer.OrdinalIgnoreCase.Equals(Path.GetDirectoryName(Path.GetFullPath(item)), desktop) ||
+                !Path.GetFileName(item).StartsWith("DesktopOrganizer-probe-", StringComparison.Ordinal) ||
+                !item.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Shell smoke notifications are limited to owned desktop fixture names.");
+        SHChangeNotify(renamedTo is not null ? 1 : deleted ? 4 : 2, 0x2005, path, renamedTo); // PATHW | FLUSHNOWAIT
+    }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern void SHChangeNotify(int change, uint flags, string before, string? after);
 
     // Captures actual screen pixels, including layered windows. Foreground apps are not hidden.
     public static byte[] CaptureScreenArea(DesktopArea area)

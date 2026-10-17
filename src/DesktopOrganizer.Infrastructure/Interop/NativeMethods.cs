@@ -45,6 +45,7 @@ internal static class NativeMethods
         public long Reserved1, Reserved2, Reserved3, Reserved4;
     }
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool SetLayeredWindowAttributes(nint window, uint color, byte alpha, uint flags);
+    [DllImport("user32.dll", SetLastError = true)] internal static extern bool GetLayeredWindowAttributes(nint window, out uint color, out byte alpha, out uint flags);
     [DllImport("user32.dll", SetLastError = true)] internal static extern int SetWindowRgn(nint window, nint region, bool redraw);
     [DllImport("user32.dll")] internal static extern int GetWindowRgn(nint window, nint region);
     [DllImport("gdi32.dll")] internal static extern uint GetRegionData(nint region, uint size, [Out] byte[]? data);

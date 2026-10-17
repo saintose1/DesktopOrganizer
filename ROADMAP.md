@@ -1,5 +1,17 @@
 # Roadmap
 
+## Стабилизация Explorer — октябрь 2026
+
+- [x] Локальная точка возврата `pre-explorer-stabilization-20261013`, пользовательские данные сохранены отдельно.
+- [x] Активация прозрачности ListView после создания/render/Z-order собственных поверхностей; обратимое восстановление исходных свойств.
+- [x] Восстановление сброшенных Explorer background/styles без записи позиций и без repaint исправного состояния.
+- [x] Shell create/delete/rename notifications; удаление только после подтверждения отсутствия, уплотнение только изменившейся группы.
+- [x] Неполные snapshots не заменяют последний пригодный cache и не сбрасывают assignments; transient read не завершает живую Shell session и не восстанавливает grid посреди drag.
+- [x] Drop позиционирует только изменившиеся группы; обычный outside drop не пишет Fence JSON и не reposition другие Fences.
+- [x] Debug/Release: 0 warnings/errors, 350 tests; actual Shell/API smoke и восстановление всех 65 исходных позиций.
+- [ ] Подтверждение реальными mouse/OLE gestures с Wallpaper Engine: новый ярлык, обычный drag рядом с expanded/collapsed Fences, multi-drag и hover.
+- Отчёт и оставшиеся ручные проверки: [Explorer stabilization](docs/STABILIZATION-EXPLORER-20261017.md).
+
 ## Приватный checkpoint v0.1.0
 
 - [x] README приведён к текущему Lavender HUD UI, customization, tray/autostart и animation pipeline.

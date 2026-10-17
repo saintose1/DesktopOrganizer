@@ -19,6 +19,7 @@ internal static class DesktopSmoke
     public static int Run()
     {
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        application.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/DesktopOrganizer.App;component/Themes/LavenderHud.xaml", UriKind.Relative) });
         var exit = 1;
         application.Dispatcher.InvokeAsync(async () =>
         {
@@ -32,6 +33,8 @@ internal static class DesktopSmoke
 
     private static async Task Scenario()
     {
+        foreach (var process in Process.GetProcessesByName("DesktopOrganizer.App"))
+            using (process) throw new InvalidOperationException("Exit production DesktopOrganizer through its tray before this isolated smoke.");
         var directory = Path.GetFullPath(Path.Combine(".tools", "icons-smoke", DateTime.Now.ToString("yyyyMMdd-HHmmss")));
         Directory.CreateDirectory(directory);
         var store = new JsonFenceStore(directory, NullLogger<JsonFenceStore>.Instance);

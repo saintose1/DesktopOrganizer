@@ -50,10 +50,20 @@ internal sealed class ExplorerIconLayer : IDisposable
     public void SetEnabled(bool enabled)
     {
         if (enabled == _fenceCompositionEnabled || _original is null) return;
-        _fenceCompositionEnabled = enabled;
-        if (_nativeSelection) return;
-        if (enabled) { ApplyFenceComposition(); Redraw(parent: false); }
-        else if (_discovery.Validate(_handles)) Restore(_original);
+        if (_nativeSelection) { _fenceCompositionEnabled = enabled; return; }
+        try
+        {
+            if (enabled) { ApplyFenceComposition(); Redraw(parent: true); }
+            else if (_discovery.Validate(_handles)) Restore(_original);
+            _fenceCompositionEnabled = enabled;
+        }
+        catch
+        {
+            // A failed lease must not leave an opaque key-colored desktop or suppress the next retry.
+            if (_discovery.Validate(_handles)) Restore(_original);
+            _fenceCompositionEnabled = false;
+            throw;
+        }
     }
     internal void SetOutlineForProbe(bool outline)
     {
@@ -62,21 +72,45 @@ internal sealed class ExplorerIconLayer : IDisposable
         _outlineMarquee = outline;
         if (_fenceCompositionEnabled) { ApplyFenceComposition(); Redraw(parent: false); }
     }
+    public void EnsureComposition()
+    {
+        if (!_fenceCompositionEnabled || _nativeSelection || _original is null) return;
+        if (!_discovery.Validate(_handles)) throw new InvalidOperationException("Desktop composition lease lost its Explorer host.");
+        if (!EnsureFenceProperties(_handles.IconList)) return;
+        Redraw(parent: true);
+        _logger.LogInformation("Explorer desktop background properties changed; owned Fence transparency restored");
+    }
+    internal static bool EnsureFenceProperties(nint list)
+    {
+        var layered = ((uint)NativeMethods.GetWindowStyle(list, -20) & NativeMethods.Layered) != 0;
+        // Another layered renderer may have taken ownership; never replace its alpha/key or per-pixel backing.
+        if (layered && (!NativeMethods.GetLayeredWindowAttributes(list, out var key, out _, out var flags) || key != Key || flags != 1))
+            throw new InvalidOperationException("Desktop icon layer is now controlled by another layered renderer.");
+        if (layered && (uint)NativeMethods.SendMessage(list, 0x1000, 0, 0) == Key &&
+            (uint)NativeMethods.SendMessage(list, 0x1025, 0, 0) == uint.MaxValue &&
+            ((uint)NativeMethods.SendMessage(list, 0x1037, 0, 0) & Mask) == DoubleBuffer) return false;
+        ApplyFenceProperties(list);
+        return true;
+    }
     private void ApplyFenceComposition()
     {
         if (_original is null || !_discovery.Validate(_handles)) throw new InvalidOperationException("Desktop composition lease lost its Explorer host.");
-        var list = _handles.IconList;
+        ApplyFenceProperties(_handles.IconList);
+    }
+    internal static void ApplyFenceProperties(nint list)
+    {
         // Icon/OLE rendering keeps native double buffering. Only a classified empty
         // background press disables the alpha marquee bit, before Explorer sees DOWN.
         // Layered/color-key backing itself never changes during outline selection.
-        NativeMethods.SendMessage(list, 0x1036, (nint)Mask, (nint)DoubleBuffer);
-        NativeMethods.SendMessage(list, 0x1001, 0, (nint)Key);
-        NativeMethods.SendMessage(list, 0x1026, 0, -1);
         Marshal.SetLastPInvokeError(0);
         var extended = (uint)NativeMethods.GetWindowStyle(list, -20);
         NativeMethods.SetWindowStyle(list, -20, (nint)(extended | NativeMethods.Layered));
         if (Marshal.GetLastPInvokeError() != 0) throw new Win32Exception(Marshal.GetLastWin32Error());
         if (!NativeMethods.SetLayeredWindowAttributes(list, Key, 255, 1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        // LVM_SETBKCOLOR may paint synchronously; install its transparency before exposing the dark key.
+        NativeMethods.SendMessage(list, 0x1036, (nint)Mask, (nint)DoubleBuffer);
+        NativeMethods.SendMessage(list, 0x1001, 0, (nint)Key);
+        NativeMethods.SendMessage(list, 0x1026, 0, -1);
     }
     public void BeginNativeSelection()
     {
@@ -141,15 +175,25 @@ internal sealed class ExplorerIconLayer : IDisposable
     private void Restore(State state, bool parentRepaint = true)
     {
         var list = _handles.IconList;
-        var extended = (uint)NativeMethods.GetWindowStyle(list, -20);
-        NativeMethods.SetWindowStyle(list, -20, (nint)((extended & ~NativeMethods.Layered) | (state.Extended & NativeMethods.Layered)));
-        NativeMethods.SendMessage(list, 0x1036, (nint)Mask, (nint)(state.ListStyles & Mask));
-        NativeMethods.SendMessage(list, 0x1001, 0, (nint)state.Background);
-        NativeMethods.SendMessage(list, 0x1026, 0, (nint)state.TextBackground);
+        RestoreProperties(list, state.Extended, state.ListStyles, state.Background, state.TextBackground);
         // Compatibility with recovery journals from the previous animation implementation.
         // Current transitions never change the Explorer window region.
         if (state.RegionCaptured) DesktopIconRegionState.Restore(list, state.WindowRegion);
         Redraw(parentRepaint);
+    }
+    internal static void RestoreProperties(nint list, uint originalExtended, uint listStyles, uint background, uint textBackground)
+    {
+        var extended = (uint)NativeMethods.GetWindowStyle(list, -20);
+        if ((extended & NativeMethods.Layered) != 0 &&
+            (!NativeMethods.GetLayeredWindowAttributes(list, out var key, out _, out var flags) || key != Key || flags != 1))
+            throw new InvalidOperationException("Cannot restore a desktop icon layer owned by another renderer; recovery journal retained.");
+        // Restore wallpaper colors while the key is still transparent, before removing its layered backing.
+        NativeMethods.SendMessage(list, 0x1036, (nint)Mask, (nint)(listStyles & Mask));
+        NativeMethods.SendMessage(list, 0x1001, 0, (nint)background);
+        NativeMethods.SendMessage(list, 0x1026, 0, (nint)textBackground);
+        Marshal.SetLastPInvokeError(0);
+        NativeMethods.SetWindowStyle(list, -20, (nint)((extended & ~NativeMethods.Layered) | (originalExtended & NativeMethods.Layered)));
+        if (Marshal.GetLastPInvokeError() != 0) throw new Win32Exception(Marshal.GetLastWin32Error());
     }
     private void Redraw(bool parent)
     {

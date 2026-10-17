@@ -18,6 +18,15 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
     private readonly ExplorerInteractionTrace? _trace;
     private readonly HashSet<AnimationSession> _animations = [];
     public DesktopPositionCounters PositionCounters => new(Interlocked.Read(ref _positionBatches), Interlocked.Read(ref _redrawCompletions));
+    public static bool IsConfirmedMissingFile(string identity)
+    {
+        if (string.IsNullOrWhiteSpace(identity) || !Path.IsPathFullyQualified(identity)) return false;
+        try { _ = File.GetAttributes(identity); return false; }
+        catch (FileNotFoundException) { return true; }
+        catch (DirectoryNotFoundException) { return true; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        { return false; }
+    }
     public DesktopIconService(ILogger<DesktopIconService> logger, ILogger<DesktopDiscovery> discoveryLogger, ExplorerInteractionTrace? interactionTrace = null)
     {
         _logger = logger; _discovery = new(discoveryLogger); _trace = interactionTrace;
@@ -46,6 +55,9 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
         {
             if (_lastError != error.Message) _logger.LogWarning(error, "Desktop icon reader unavailable; retrying");
             _lastError = error.Message;
+            // A transient read failure must not restore snap-to-grid and reflow parked items during a drag.
+            if (_session is not null && _discovery.Validate(_session.Handles))
+                return new DesktopIconSnapshot(true, false, [], IconGridMetrics.Default, error.Message);
             _session?.Dispose(); _session = null;
             return new DesktopIconSnapshot(false, false, [], IconGridMetrics.Default, error.Message);
         }
@@ -335,10 +347,11 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
             using var memory = new RemoteListViewBuffer(Handles.ProcessId, _logger);
             var count = (int)SendMessage(Handles.IconList, 0x1004, 0, 0);
             if (count is < 0 or > 100000) throw new InvalidOperationException("Invalid ListView icon count.");
+            Marshal.ThrowExceptionForHR(_shell.View.ItemCount(2, out var shellCount)); // SVGIO_ALLVIEW
             var origin = new NativeMethods.Point();
             if (!NativeMethods.ClientToScreen(Handles.IconList, ref origin)) throw new InvalidOperationException("Cannot read desktop coordinate origin.");
             var viewOrigin = SendMessage(Handles.IconList, 0x1029, 0, memory.Address(0)) != 0 ? memory.Read<NativeMethods.Point>(0) : new();
-            _coordinates = new(new(origin.X, origin.Y), new(viewOrigin.X, viewOrigin.Y));
+            var coordinates = new DesktopCoordinates(new(origin.X, origin.Y), new(viewOrigin.X, viewOrigin.Y));
             var spacing = (long)SendMessage(Handles.IconList, 0x1033, 0, 0);
             var stepX = (int)(spacing & 0xFFFF); var stepY = (int)((spacing >> 16) & 0xFFFF);
             var icons = new List<DesktopIcon>(count);
@@ -368,7 +381,7 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
                         var name = length > 0 ? memory.ReadText(256, length) : shellName; // Owner-data views use Shell display text.
                         if (!StringComparer.CurrentCulture.Equals(name, shellName)) throw new InvalidOperationException("Icon index identity changed during enumeration.");
                         memory.Write(16, new NativeMethods.Rect()); // LVIR_BOUNDS=0
-                        var screen = _coordinates.ToScreen(new(point.X, point.Y));
+                        var screen = coordinates.ToScreen(new(point.X, point.Y));
                         DesktopBounds bounds;
                         if (SendMessage(Handles.IconList, 0x100E, index, memory.Address(16)) != 0)
                         {
@@ -385,10 +398,24 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
                     catch (Exception itemError) when (itemError is not OperationCanceledException) { failed++; firstFailure ??= itemError.Message; }
                     finally { if (pidl != 0) Marshal.FreeCoTaskMem(pidl); }
                 }
-                foreach (var old in _pidls.Values) Marshal.FreeCoTaskMem(old);
-                _pidls.Clear();
-                foreach (var pair in newPidls) _pidls.Add(pair.Key, pair.Value);
-                newPidls.Clear();
+                Marshal.ThrowExceptionForHR(_shell.View.ItemCount(2, out var finalShellCount));
+                var finalCount = (int)SendMessage(Handles.IconList, 0x1004, 0, 0);
+                var finalOrigin = new NativeMethods.Point();
+                var finalOriginRead = NativeMethods.ClientToScreen(Handles.IconList, ref finalOrigin);
+                var finalViewOrigin = SendMessage(Handles.IconList, 0x1029, 0, memory.Address(0)) != 0 ? memory.Read<NativeMethods.Point>(0) : new();
+                if (shellCount != count || finalShellCount != count || finalCount != count ||
+                    !finalOriginRead || finalOrigin.X != origin.X || finalOrigin.Y != origin.Y ||
+                    finalViewOrigin.X != viewOrigin.X || finalViewOrigin.Y != viewOrigin.Y)
+                { failed++; firstFailure ??= "Explorer membership or coordinate origin changed during enumeration."; }
+                // An incomplete enumeration cannot replace the last usable identity cache or prune assignments.
+                if (failed == 0)
+                {
+                    _coordinates = coordinates;
+                    foreach (var old in _pidls.Values) Marshal.FreeCoTaskMem(old);
+                    _pidls.Clear();
+                    foreach (var pair in newPidls) _pidls.Add(pair.Key, pair.Value);
+                    newPidls.Clear();
+                }
                 var autoArrange = _shell.View.GetAutoArrange();
                 Marshal.ThrowExceptionForHR(autoArrange);
                 var canPosition = autoArrange == 1; // S_FALSE: auto-arrange is off.

@@ -27,6 +27,9 @@ public sealed class DesktopIconCoordinator : IDisposable
     private IReadOnlyList<DesktopIconTarget> _recovery = [];
     private IReadOnlyList<Fence> _fences = [];
     private Dictionary<string, DesktopIcon> _matched = new(FenceIconLayout.IdentityComparer);
+    private HashSet<string> _previousMissing = new(FenceIconLayout.IdentityComparer);
+    private readonly Dictionary<string, string> _renames = new(FenceIconLayout.IdentityComparer);
+    private readonly HashSet<string> _removed = new(FenceIconLayout.IdentityComparer);
     private IReadOnlyList<DesktopArea> _monitors = [];
     private MoveBatch? _pending;
     private bool _reading, _moving, _initialized, _disposed, _applyingDrop, _positioningAvailable, _requested, _scheduled, _recoveryLoaded;
@@ -54,6 +57,8 @@ public sealed class DesktopIconCoordinator : IDisposable
         _releaseTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(16) };
         _timer.Tick += OnTick; _releaseTimer.Tick += OnReleaseTick;
         _host.IconPositionsChanged += OnExplorerChanged;
+        _host.IconRenamed += OnIconRenamed;
+        _host.IconRemoved += OnIconRemoved;
         _host.ExplorerPointer += OnExplorerPointer;
         _host.SetSelectionReader(icons as IDesktopSelectionReader);
     }
@@ -79,6 +84,7 @@ public sealed class DesktopIconCoordinator : IDisposable
         if (input.Phase == ExplorerPointerPhase.Pressed)
         {
             if (input.SelectionSnapshot is null) _host.Trace.Begin();
+            _previousMissing.Clear();
             _explorerGesture.Begin(input.Point, input.Background); _selectionRead = null;
             if (input.SelectionSnapshot is not null)
                 _selectionRead = CaptureSelectionAsync(input.SelectionSnapshot, _explorerGesture.Sequence);
@@ -113,6 +119,21 @@ public sealed class DesktopIconCoordinator : IDisposable
         if (ExplorerBusy()) { _releaseTimer.Start(); return; }
         RequestObservation();
     }
+    private void OnIconRenamed(string before, string after)
+    {
+        if (!_fences.SelectMany(f => f.Icons).Any(i => FenceIconLayout.IdentityComparer.Equals(i.StableId, before)) &&
+            !_renames.Values.Contains(before, FenceIconLayout.IdentityComparer)) return;
+        foreach (var original in _renames.Where(p => FenceIconLayout.IdentityComparer.Equals(p.Value, before)).Select(p => p.Key).ToArray())
+            _renames[original] = after;
+        _renames[before] = after;
+        _revision++; // Invalidate a proposal computed before a newer native rename pair.
+        RequestObservation();
+    }
+    private void OnIconRemoved(string identity)
+    {
+        if (_fences.SelectMany(f => f.Icons).Any(i => FenceIconLayout.IdentityComparer.Equals(i.StableId, identity)) && _removed.Add(identity)) _revision++;
+        RequestObservation();
+    }
     private void OnReleaseTick(object? sender, EventArgs args)
     {
         if (ExplorerBusy()) return;
@@ -136,6 +157,8 @@ public sealed class DesktopIconCoordinator : IDisposable
             if (_selectionRead is not null) await _selectionRead;
             if (Busy()) return;
             _host.FinishNativeSelection();
+            // Shell refresh can reset the ListView background before item enumeration becomes consistent.
+            _host.ReconcileExplorerPresentation();
             if (_initialized && _positioningAvailable && Enabled && _host.PresentationConnected &&
                 _explorerGesture.Drop is { DesktopTarget: true } drop && DropAffectsFence(drop))
             { await ReconcileDropAsync(drop); return; }
@@ -143,7 +166,10 @@ public sealed class DesktopIconCoordinator : IDisposable
             if (Busy()) return;
             SetStatus($"Desktop icons: {(snapshot.Connected ? snapshot.Icons.Count.ToString() : "Disconnected")}" +
                 (snapshot.Error is null ? snapshot.Notice is null ? "" : " · " + snapshot.Notice : " · " + snapshot.Error));
-            if (!snapshot.Connected) { _initialized = false; _positioningAvailable = false; return; }
+            if (!snapshot.Connected) { _previousMissing.Clear(); _initialized = false; _positioningAvailable = false; return; }
+            // Retain the last complete snapshot and readiness through transient Explorer enumeration failures.
+            if (snapshot.Error is not null) { _previousMissing.Clear(); return; }
+            _host.ReconcileExplorerPresentation();
             Metrics = snapshot.Metrics; _host.IconMetrics = Metrics;
             _matched = FenceIconLayout.Match(snapshot.Icons);
             _host.SetIcons(snapshot.Icons);
@@ -157,13 +183,14 @@ public sealed class DesktopIconCoordinator : IDisposable
             _positioningAvailable = available;
             // Polling observes Explorer, but must never infer a partial drop from individual bounds.
             ApplySnapshot(snapshot); CompleteGesture();
+            if (available) await ReconcileMembershipAsync(snapshot);
         }
         catch (OperationCanceledException) { }
         catch (Exception exception)
         {
             _host.Trace.Mark("Reconciliation.failure");
             _logger.LogWarning(exception, "Desktop icon reconciliation failed; durable assignment was not advanced");
-            SetStatus("Desktop icons: " + exception.Message); _initialized = false;
+            SetStatus("Desktop icons: " + exception.Message);
             if (_explorerGesture.Phase == ExplorerGesturePhase.PostDropReconciliation) CompleteGesture();
         }
         finally
@@ -194,7 +221,7 @@ public sealed class DesktopIconCoordinator : IDisposable
                     // Runs on the Shell worker before the redraw lease. Immutable inputs and pure
                     // Core geometry only; no UI, host calls, recovery files or persistence here.
                     changed = FenceIconLayout.ApplyGroupDrop(source, drop, snapshot.Icons, snapshot.Metrics, f => scales[f.Id]);
-                    targets = FenceIconLayout.ChangedTargets(IconPlacement.Targets(changed, monitors, snapshot.Metrics), snapshot.Icons);
+                    targets = FenceIconLayout.ChangedTargets(IconPlacement.ChangedFenceTargets(source, changed, monitors, snapshot.Metrics), snapshot.Icons);
                     _host.Trace.Mark("Assignment/layout.proposal", drop.DraggedIds.Count);
                     return targets;
                 },
@@ -221,6 +248,50 @@ public sealed class DesktopIconCoordinator : IDisposable
         finally { _applyingDrop = false; }
     }
     private bool ExplorerBusy() => _explorerGesture.InProgress || _host.HasExplorerGesture || _host.IsLeftButtonDown || _host.IsExplorerDragging;
+    private async Task ReconcileMembershipAsync(DesktopIconSnapshot snapshot)
+    {
+        var present = FenceIconLayout.Match(snapshot.Icons);
+        var missing = _fences.SelectMany(f => f.Icons).Select(i => i.StableId).Where(id => !present.ContainsKey(id))
+            .ToHashSet(FenceIconLayout.IdentityComparer);
+        var confirmed = missing.Intersect(_previousMissing, FenceIconLayout.IdentityComparer).ToHashSet(FenceIconLayout.IdentityComparer);
+        _removed.RemoveWhere(present.ContainsKey); // A restored item invalidates an earlier DELETE, even before the first missing read.
+        // A Shell removal event or a confirmed missing filesystem item is required, even after two complete reads.
+        var removed = _removed.ToHashSet(FenceIconLayout.IdentityComparer);
+        if (confirmed.Count != 0)
+            confirmed = await Task.Run(() => confirmed.Where(id => removed.Contains(id) || DesktopIconService.IsConfirmedMissingFile(id))
+                .ToHashSet(FenceIconLayout.IdentityComparer), _shutdown.Token);
+        if (Busy()) return;
+        _previousMissing = missing;
+        if (confirmed.Count == 0 && _renames.Count == 0) return;
+        var source = _fences.ToArray(); var revision = _revision; var sequence = _explorerGesture.Sequence;
+        var scales = source.ToDictionary(f => f.Id, _host.GetScale);
+        var monitors = _monitors.ToArray(); var renames = new Dictionary<string, string>(_renames, FenceIconLayout.IdentityComparer);
+        IReadOnlyList<Fence> changed = FenceIconLayout.ReconcileMembership(source, snapshot, confirmed, renames, f => scales[f.Id]);
+        if (SameState(source, changed)) return;
+        _applyingDrop = true;
+        try
+        {
+            var positioned = await _transaction.ApplyPlannedAsync(final =>
+            {
+                changed = FenceIconLayout.ReconcileMembership(source, final, confirmed, renames, f => scales[f.Id]);
+                return FenceIconLayout.ChangedTargets(IconPlacement.ChangedFenceTargets(source, changed, monitors, final.Metrics), final.Icons);
+            }, verified =>
+            {
+                if (Busy() || _revision != revision || _explorerGesture.Sequence != sequence) return Task.FromResult(false);
+                var recovery = IconPlacement.ReturnPositions(changed); PrepareRecovery(recovery);
+                var accepted = SameState(source, changed) || _commit(changed);
+                if (accepted) CompleteRecovery(recovery);
+                return Task.FromResult(accepted);
+            }, _shutdown.Token);
+            ApplySnapshot(positioned);
+            var assigned = _fences.SelectMany(f => f.Icons).Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
+            foreach (var alias in renames.Keys.Where(id => !assigned.Contains(id))) _renames.Remove(alias);
+            _removed.RemoveWhere(id => !assigned.Contains(id));
+            _logger.LogInformation("Explorer membership reconciled: ConfirmedMissing={Missing}; RenamePairs={Renamed}; Assigned={Assigned}",
+                confirmed.Count, renames.Count, assigned.Count);
+        }
+        finally { _applyingDrop = false; }
+    }
     private bool ExplorerPositioningBusy() => _host.HasExplorerGesture ||
         _explorerGesture.BlocksFencePresentation(InteractionActive || _host.HasActiveInteraction, _host.IsExplorerDragging);
     private bool Busy() => _disposed || InteractionActive || _host.HasActiveInteraction || ExplorerBusy();
@@ -455,6 +526,7 @@ public sealed class DesktopIconCoordinator : IDisposable
                         }
                         _host.SetIcons(_matched.Values.ToArray()); _host.EnsureStacking();
                     }
+                    _host.ReconcileExplorerPresentation();
                     var iconTime = Stopwatch.GetElapsedTime(positionStart).TotalMilliseconds;
                     batch.Present?.Invoke(); _host.FlushDamage();
                     LastPresentationAt = Stopwatch.GetTimestamp();
@@ -528,6 +600,8 @@ public sealed class DesktopIconCoordinator : IDisposable
     {
         if (_disposed) return; _disposed = true;
         _host.IconPositionsChanged -= OnExplorerChanged;
+        _host.IconRenamed -= OnIconRenamed;
+        _host.IconRemoved -= OnIconRemoved;
         _host.ExplorerPointer -= OnExplorerPointer;
         _timer.Stop(); _timer.Tick -= OnTick; _releaseTimer.Stop(); _releaseTimer.Tick -= OnReleaseTick;
         _shutdown.Cancel(); _pending?.Completion?.TrySetCanceled(); _pending?.Dispose(); _pending = null;

@@ -15,6 +15,7 @@ internal sealed class DesktopIconEvents : IDisposable
     private readonly ILogger _logger;
     private readonly ExplorerInteractionTrace? _trace;
     private readonly List<nint> _hooks = [];
+    private readonly List<(uint Registration, nint Pidl)> _shellNotifications = [];
     private DesktopHandles? _handles;
     private const string ReceiverClass = "DesktopOrganizer.IconDropNotifications";
     private static readonly NativeMethods.WindowProc ReceiverProcedure = OnMessage;
@@ -26,6 +27,7 @@ internal sealed class DesktopIconEvents : IDisposable
     private bool _backgroundPress, _dragNotified, _nativeBackground;
     private int _dragX, _dragY;
     private const uint BackgroundDelivery = 0x8002;
+    private const uint ShellChanged = 0x8003;
     private readonly ConcurrentQueue<(uint Message, nint Keys, nint Point)> _backgroundDeliveries = new();
     private int _stoppingReceiver;
     private long _connectionSequence;
@@ -37,6 +39,8 @@ internal sealed class DesktopIconEvents : IDisposable
     private ExplorerBackgroundMouse? _backgroundMouse;
     public bool GestureActive => _desktopPress || _deliveringBackground || !_backgroundDeliveries.IsEmpty;
     public event Action? Changed;
+    public event Action<string, string>? Renamed;
+    public event Action<string>? Removed;
     public event Action? StackingChanged;
     public event Action? BackgroundPress;
     public event Action? BackgroundPressClassified;
@@ -64,17 +68,22 @@ internal sealed class DesktopIconEvents : IDisposable
             if (!NativeMethods.RegisterRawInputDevices([new() { Page = 1, Usage = 2, Flags = 0x100, Target = _receiver }], 1,
                     (uint)Marshal.SizeOf<NativeMethods.RawInputDevice>())) throw new Win32Exception(Marshal.GetLastWin32Error());
             _backgroundMouse = new(handles, _logger, QueueBackgroundDelivery);
-            foreach (var range in new[] { (0x8u, 0x9u), (0xEu, 0xFu), (0x800Bu, 0x800Bu), (0x8004u, 0x8004u) })
+            foreach (var range in new[] { (0x8u, 0x9u), (0xEu, 0xFu), (0x800Bu, 0x800Cu), (0x8004u, 0x8004u), (0x8000u, 0x8001u) })
             {
                 var hook = NativeMethods.SetWinEventHook(range.Item1, range.Item2, 0, _callback, handles.ProcessId, 0, 2); // OUTOFCONTEXT | SKIPOWNPROCESS
                 if (hook == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
                 _hooks.Add(hook);
             }
+            RegisterShellNotifications();
         }
         catch { Dispose(); throw; }
     }
     private static nint OnMessage(nint window, uint message, nint wParam, nint lParam)
     {
+        if (message == ShellChanged && Receivers.TryGetValue(window, out var shellReceiver))
+        {
+            shellReceiver.OnShellChanged(wParam, unchecked((uint)(long)lParam)); return 0;
+        }
         if (message == BackgroundDelivery && Receivers.TryGetValue(window, out var target))
         {
             target.DeliverBackground(); return 0;
@@ -209,6 +218,7 @@ internal sealed class DesktopIconEvents : IDisposable
         var handles = _handles;
         if (handles is null || !NativeMethods.IsWindow(handles.IconList)) return;
         if (kind >= 0x8000 && window != handles.IconList) return;
+        if (kind is 0x8000 or 0x8001 or 0x800C && (objectId != -4 || childId <= 0)) return; // OBJID_CLIENT item only
         if (kind < 0x8000 && !(kind == 0xF && _dragNotified) &&
             window != handles.IconList && window != handles.DefView && window != handles.Progman && window != handles.WorkerW) return;
         // Subscribers enqueue work and do not make Shell/COM calls from the reentrant callback.
@@ -223,12 +233,61 @@ internal sealed class DesktopIconEvents : IDisposable
         }
         Changed?.Invoke();
     }
+    private void RegisterShellNotifications()
+    {
+        foreach (var folder in new[] { new Guid("B4BFCC3A-DB2C-424C-B029-7FE99A87C641"), new Guid("C4AA340D-F20F-4863-AFEF-F87EF2E6BA25") })
+        {
+            var id = folder;
+            nint pidl = 0;
+            try
+            {
+                Marshal.ThrowExceptionForHR(SHGetKnownFolderIDList(ref id, 0, 0, out pidl));
+                var entry = new ShellChangeEntry { Pidl = pidl };
+                const int events = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x1000 | 0x2000 | 0x20000; // rename/create/delete/update immediate desktop children
+                var registration = SHChangeNotifyRegister(_receiver, 0x8003, events, ShellChanged, 1, ref entry); // INTERRUPT | SHELL | NEWDELIVERY
+                if (registration == 0) throw new InvalidOperationException("Shell desktop membership registration failed.");
+                _shellNotifications.Add((registration, pidl)); pidl = 0;
+            }
+            catch (Exception error) { _logger.LogWarning("Shell desktop membership notifications unavailable ({ExceptionType})", error.GetType().Name); }
+            finally { if (pidl != 0) Marshal.FreeCoTaskMem(pidl); }
+        }
+    }
+    private void OnShellChanged(nint change, uint process)
+    {
+        var token = SHChangeNotification_Lock(change, process, out var pidls, out var kind);
+        string? before = null, after = null;
+        try
+        {
+            if (token == 0) return;
+            if (pidls != 0 && (kind & (0x1 | 0x4 | 0x10 | 0x20000)) != 0)
+            {
+                var oldPidl = Marshal.ReadIntPtr(pidls); var newPidl = Marshal.ReadIntPtr(pidls, IntPtr.Size);
+                if (oldPidl != 0) before = ShellFolderView.Name(oldPidl, 0x80028000);
+                if ((kind & (0x1 | 0x20000)) != 0 && newPidl != 0) after = ShellFolderView.Name(newPidl, 0x80028000);
+            }
+        }
+        catch (Exception error) { _logger.LogWarning("Shell desktop membership notification unavailable ({ExceptionType})", error.GetType().Name); }
+        finally { if (token != 0) SHChangeNotification_Unlock(token); }
+        try
+        {
+            if (before is not null && after is not null) Renamed?.Invoke(before, after);
+            if (before is not null && (kind & (0x4 | 0x10)) != 0) Removed?.Invoke(before);
+            Changed?.Invoke();
+        }
+        catch (Exception error) { _logger.LogWarning("Shell desktop membership subscriber interrupted ({ExceptionType})", error.GetType().Name); }
+    }
     public void Dispose()
     {
         _connectionSequence++;
         _marquee.End();
         Volatile.Write(ref _stoppingReceiver, 1);
         _backgroundMouse?.Dispose(); _backgroundMouse = null;
+        foreach (var notification in _shellNotifications)
+        {
+            SHChangeNotifyDeregister(notification.Registration);
+            Marshal.FreeCoTaskMem(notification.Pidl);
+        }
+        _shellNotifications.Clear();
         if (_receiver != 0)
         {
             NativeMethods.RegisterRawInputDevices([new() { Page = 1, Usage = 2, Flags = 1 }], 1, (uint)Marshal.SizeOf<NativeMethods.RawInputDevice>());
@@ -241,4 +300,10 @@ internal sealed class DesktopIconEvents : IDisposable
         while (_backgroundDeliveries.TryDequeue(out _)) { }
         GC.KeepAlive(_callback);
     }
+    [StructLayout(LayoutKind.Sequential)] private struct ShellChangeEntry { public nint Pidl; public int Recursive; }
+    [DllImport("shell32.dll")] private static extern int SHGetKnownFolderIDList(ref Guid folder, uint flags, nint token, out nint pidl);
+    [DllImport("shell32.dll")] private static extern uint SHChangeNotifyRegister(nint window, int sources, int events, uint message, int count, ref ShellChangeEntry entry);
+    [DllImport("shell32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SHChangeNotifyDeregister(uint registration);
+    [DllImport("shell32.dll")] private static extern nint SHChangeNotification_Lock(nint change, uint process, out nint pidls, out int kind);
+    [DllImport("shell32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SHChangeNotification_Unlock(nint token);
 }

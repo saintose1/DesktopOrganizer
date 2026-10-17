@@ -45,6 +45,8 @@ if (args.Length == 1 && args[0] == "--presentation-state")
 {
     Console.WriteLine(DesktopDiagnostics.CompositionState(desktop)); return 0;
 }
+if (args.Length == 2 && args[0] == "--wallpaper-composition-probe")
+    return await WallpaperCompositionProbe(args[1]);
 if (args.Length == 3 && args[0] == "--selection-at")
 {
     using var icons = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
@@ -249,6 +251,80 @@ if (args.Length == 2 && args[0] == "--capture-directory")
 }
 return 0;
 
+}
+
+static Task<int> WallpaperCompositionProbe(string directory)
+{
+    var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var thread = new Thread(() =>
+    {
+        var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+        SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext(dispatcher));
+        dispatcher.BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                Directory.CreateDirectory(directory);
+                var discovery = new DesktopDiscovery(NullLogger<DesktopDiscovery>.Instance);
+                var handles = discovery.Find() ?? throw new InvalidOperationException("No Explorer desktop.");
+                if (DesktopDiagnostics.Inspect(handles).Count != 0)
+                    throw new InvalidOperationException("Close DesktopOrganizer before the reversible wallpaper probe.");
+                var before = DesktopDiagnostics.CompositionState(handles);
+                foreach (var line in DesktopDiagnostics.WallpaperWindowTree(handles)) Console.WriteLine(line);
+                DesktopShell.ShowDesktop();
+                await Task.Delay(150);
+                var area = DesktopDiagnostics.MonitorAreas().First();
+                var sample = new DesktopArea(area.X + area.Width / 2, area.Y + area.Height * 3 / 4, 180, 100);
+                foreach (var mode in new[] { "original", "body-only", "header-only", "key-only", "full-key", "key-transparent", "native-transparent" })
+                {
+                    using (var host = new Win32DesktopHost(discovery, NullLogger<Win32DesktopHost>.Instance))
+                    {
+                        if (!host.Connect()) throw new InvalidOperationException("Desktop host lost.");
+                        DesktopDiagnostics.SetProbeIconComposition(host, false);
+                        var fence = new Fence(Guid.NewGuid(), "Wallpaper composition probe", Math.Round(area.X + area.Width * .65), Math.Round(area.Y + area.Height * .25), 300, 220);
+                        var scale = host.GetScale(fence);
+                        var layout = FenceSurfaceLayout.Clip(fence, host.GetArea(), scale) ?? throw new InvalidOperationException("No probe bounds.");
+                        if (mode != "original")
+                        {
+                            var headerHeight = Math.Min(layout.Height, (int)Math.Ceiling(FenceInteractionGeometry.HeaderHeight * scale));
+                            var header = new byte[layout.Width * headerHeight * 4];
+                            for (var i = 0; i < header.Length; i += 4)
+                            { header[i] = 0x5A; header[i + 1] = 0x41; header[i + 2] = 0x2D; header[i + 3] = 255; }
+                            host.Update(fence, layout, scale, header);
+                        }
+                        DesktopDiagnostics.SetWallpaperProbeMode(host, mode);
+                        await Task.Delay(150); // Dispatcher continues serving only the probe's owned HWNDs.
+                        Capture(mode + "-wallpaper", sample);
+                        Capture(mode + "-fence", new(layout.X, layout.Y, layout.Width, layout.Height));
+                        Console.WriteLine(mode + ": " + DesktopDiagnostics.CompositionState(handles));
+                    }
+                    await Task.Delay(100);
+                    if (DesktopDiagnostics.CompositionState(handles) != before)
+                        throw new InvalidOperationException("The probe did not restore original Explorer properties after " + mode);
+                }
+                Capture("restored-wallpaper", sample);
+                Console.WriteLine("PASS: original properties restored after every mode; no files/icons moved; pixel comparison still required.");
+                completion.SetResult(0);
+
+                void Capture(string name, DesktopArea captureArea)
+                {
+                    var pixels = DesktopDiagnostics.CaptureScreenArea(captureArea);
+                    var bitmap = BitmapSource.Create(captureArea.Width, captureArea.Height, 96, 96, PixelFormats.Bgr32, null, pixels, captureArea.Width * 4);
+                    var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                    using var file = File.Create(Path.Combine(directory, name + ".png")); encoder.Save(file);
+                    var black = 0;
+                    for (var i = 0; i < pixels.Length; i += 4)
+                        if (pixels[i] < 8 && pixels[i + 1] < 8 && pixels[i + 2] < 8) black++;
+                    Console.WriteLine($"{name}: black={(double)black / (captureArea.Width * captureArea.Height):P1}");
+                }
+            }
+            catch (Exception error) { completion.SetException(error); }
+            finally { dispatcher.BeginInvokeShutdown(System.Windows.Threading.DispatcherPriority.Send); }
+        }));
+        System.Windows.Threading.Dispatcher.Run();
+    }) { IsBackground = true, Name = "DesktopOrganizer wallpaper composition probe" };
+    thread.SetApartmentState(ApartmentState.STA); thread.Start();
+    return completion.Task;
 }
 
 internal sealed class DiagnosticTraceLogger : ILogger<ExplorerInteractionTrace>

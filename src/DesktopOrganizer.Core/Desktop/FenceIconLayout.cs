@@ -86,6 +86,36 @@ public static class FenceIconLayout
         return result;
     }
 
+    /// <summary>Only confirmed missing identities are removed; native rename pairs preserve ownership and offsets.</summary>
+    public static IReadOnlyList<Fence> ReconcileMembership(IReadOnlyList<Fence> fences, DesktopIconSnapshot snapshot,
+        IReadOnlySet<string> missing, IReadOnlyDictionary<string, string> renames, Func<Fence, double> scaleFor)
+    {
+        if (!snapshot.Connected || snapshot.Error is not null) return fences;
+        var present = Match(snapshot.Icons);
+        var assigned = fences.SelectMany(f => f.Icons).Select(i => i.StableId).ToHashSet(IdentityComparer);
+        return fences.Select(fence =>
+        {
+            var remaining = new List<DesktopIconAssignment>();
+            foreach (var icon in fence.Icons)
+            {
+                var renamed = icon.StableId;
+                var visited = new HashSet<string>(IdentityComparer);
+                while (renames.TryGetValue(renamed, out var next) && visited.Add(renamed)) renamed = next;
+                if (visited.Contains(renamed)) { remaining.Add(icon); continue; }
+                if (!IdentityComparer.Equals(renamed, icon.StableId) && !present.ContainsKey(icon.StableId) &&
+                    present.TryGetValue(renamed, out var item) && !assigned.Contains(renamed))
+                {
+                    remaining.Add(new(renamed, item.DisplayName, icon.OffsetX, icon.OffsetY));
+                    assigned.Add(renamed);
+                }
+                else if (!missing.Contains(icon.StableId) || present.ContainsKey(icon.StableId)) remaining.Add(icon);
+            }
+            if (fence.Icons.SequenceEqual(remaining)) return fence;
+            var changed = fence.WithIcons(remaining);
+            return remaining.Count == fence.Icons.Length ? changed : Arrange(changed, snapshot.Metrics, scaleFor(fence));
+        }).ToArray();
+    }
+
     public static Fence? DropTarget(IReadOnlyList<Fence> fences, DesktopPoint point, Func<Fence, double> scaleFor) =>
         fences.LastOrDefault(f => !f.IsCollapsed && point.X >= f.X && point.X < f.X + f.Width &&
             point.Y >= f.Y + FenceInteractionGeometry.HeaderHeight * scaleFor(f) && point.Y < f.Y + f.Height);

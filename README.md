@@ -48,6 +48,11 @@ dotnet test DesktopOrganizer.sln -c Release --no-build
 303 теста проходят в каждой**. Unit tests не заменяют проверку настоящих mouse/OLE
 жестов, визуальной плавности и конкретной конфигурации Explorer.
 
+После точечных исправлений Explorer integration проверены Debug/Release и **350 тестов
+в каждой конфигурации**. Проверки на настоящем Explorer включают создание desktop item,
+удаление/уплотнение, rename, изоляцию обычного перемещения и восстановление состояния.
+Границы этих API-проверок и ручной checklist: [Explorer stabilization](docs/STABILIZATION-EXPLORER-20261017.md).
+
 ## Запуск
 
 ```powershell
@@ -110,6 +115,8 @@ Disconnected. Shell API не гарантирует атомарный composito
 
 - `v0.1.0` — checkpoint с Lavender HUD, customization, tray и animation polish.
 - `pre-ui-redesign-stable` — сохранённая точка возврата до редизайна интерфейса.
+- `pre-explorer-stabilization-20261013` — локальная точка возврата перед исправлением
+  wallpaper composition, удаления элементов и изоляции desktop drag.
 - [Roadmap](ROADMAP.md), [UI implementation](docs/UI-DESIGN-MAGICPATH.md),
   [animation pipeline / checklist](docs/FENCE-ANIMATION-PIPELINE.md),
   [tray lifecycle](docs/MILESTONE-TRAY.md), [Explorer rendering](docs/MILESTONE-RENDERING.md).

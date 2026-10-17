@@ -48,6 +48,8 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     public event EventHandler<FenceInteractionEventArgs>? Interaction;
     public event Action<Guid>? VisualChanged;
     public event Action? IconPositionsChanged;
+    public event Action<string, string>? IconRenamed;
+    public event Action<string>? IconRemoved;
     public event Action<ExplorerPointerEvent>? ExplorerPointer;
     public event Action<DesktopPoint, bool>? HoverPointerMoved;
     public (DesktopPoint Point, bool OnDesktop) ReadHoverPointer()
@@ -137,6 +139,10 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         _iconLayer ??= new ExplorerIconLayer(Handles, discovery, _logger, presentationRecoveryPath, _probeCompositionEnabled && _windows.Count != 0, Trace, _outlineMarquee);
         _iconEvents.Changed -= OnIconsChanged;
         _iconEvents.Changed += OnIconsChanged;
+        _iconEvents.Renamed -= OnIconRenamed;
+        _iconEvents.Renamed += OnIconRenamed;
+        _iconEvents.Removed -= OnIconRemoved;
+        _iconEvents.Removed += OnIconRemoved;
         _iconEvents.StackingChanged -= OnStackingChanged;
         _iconEvents.StackingChanged += OnStackingChanged;
         _iconEvents.BackgroundPress -= OnBackgroundPress;
@@ -166,7 +172,6 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         if (!_windows.TryGetValue(fence.Id, out var surface))
         {
             var handles = RequireHost(); RegisterClass();
-            _iconLayer?.SetEnabled(_probeCompositionEnabled);
             var background = Create(BackgroundClass, "DesktopOrganizer Fence background", SurfaceParent, true);
             nint frame = 0;
             try
@@ -194,6 +199,8 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         Trace.Mark("Fence.ULW/update");
         AddDamage(layout);
         if (_stackingDirty) EnsureStacking();
+        // Establish the transparent ListView backing after our layered children and their Z-order exist.
+        _iconLayer?.SetEnabled(_probeCompositionEnabled);
     }
     public void Remove(Guid id)
     {
@@ -241,6 +248,12 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     public void SetIcons(IReadOnlyList<DesktopIcon> icons)
     {
         _icons = icons;
+    }
+    public void ReconcileExplorerPresentation()
+    {
+        if (HasActiveInteraction || HasExplorerGesture || IsExplorerDragging || _suppressExplorerPaint != 0) return;
+        _iconLayer?.EnsureComposition();
+        EnsureStacking();
     }
     public void SyncFenceModel(Fence fence)
     {
@@ -366,6 +379,8 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         try { IconPositionsChanged?.Invoke(); }
         catch (Exception error) { _logger.LogWarning(error, "Desktop notification interrupted"); }
     }
+    private void OnIconRenamed(string before, string after) => IconRenamed?.Invoke(before, after);
+    private void OnIconRemoved(string identity) => IconRemoved?.Invoke(identity);
     public void Dispose() { _iconEvents.Dispose(); Clear(); _iconLayer?.Dispose(); _iconLayer = null; Handles = null; }
     private DesktopHandles RequireHost()
     {

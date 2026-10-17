@@ -15,6 +15,19 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--notify-smoke-removal")
+        {
+            try
+            {
+                try { System.IO.File.GetAttributes(args[1]); throw new InvalidOperationException("Refusing to announce removal of a file that still exists."); }
+                catch (System.IO.FileNotFoundException) { }
+                catch (System.IO.DirectoryNotFoundException) { }
+                DesktopDiagnostics.NotifySmokeItemChange(args[1], deleted: true);
+                Console.WriteLine("Published Shell removal notification for an already absent, guarded smoke fixture.");
+                return 0;
+            }
+            catch (Exception error) { Console.Error.WriteLine(error.Message); return 1; }
+        }
         if (args.Length == 1 && args[0] == "--composition-ab") return CompositionAB.Run();
         if (args.Length == 1 && args[0] == "--outline-composition")
         {
@@ -34,6 +47,7 @@ internal static class Program
             return ready ? 0 : 1;
         }
         if (args.Length == 1 && args[0] == "--icons-smoke") return DesktopSmoke.Run();
+        if (args.Length == 1 && args[0] == "--explorer-stability-smoke") return ExplorerStabilitySmoke.Run();
         if (args.Length == 1 && args[0] == "--rendering-smoke") return RenderingSmoke.Run();
         if (args.Length == 1 && args[0] == "--rendering-smoke-background") return RenderingSmoke.Run(showDesktop: false);
         if (args.Length == 1 && args[0] == "--animation-cadence") return AnimationCadenceSmoke.Run();

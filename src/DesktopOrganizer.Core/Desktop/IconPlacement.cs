@@ -26,6 +26,15 @@ public static class IconPlacement
 
     public static IReadOnlyList<DesktopIconTarget> Recovery(IReadOnlyList<Fence> fences) => fences.Where(f => f.IsCollapsed)
         .SelectMany(f => f.Icons.Select(i => new DesktopIconTarget(i.StableId, Normal(f, i)))).ToArray();
+
+    public static IReadOnlyList<DesktopIconTarget> ChangedFenceTargets(IReadOnlyList<Fence> before, IReadOnlyList<Fence> after,
+        IReadOnlyList<DesktopArea> monitors, IconGridMetrics metrics)
+    {
+        var affected = after.Where(f => !before.Any(old => old.Id == f.Id && old.X == f.X && old.Y == f.Y &&
+            old.Width == f.Width && old.Height == f.Height && old.IsCollapsed == f.IsCollapsed && old.Icons.SequenceEqual(f.Icons)))
+            .SelectMany(f => f.Icons).Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
+        return Targets(after, monitors, metrics).Where(t => affected.Contains(t.StableId)).ToArray();
+    }
     public static IReadOnlyList<DesktopIconTarget> ReturnPositions(IReadOnlyList<Fence> fences) => fences
         .SelectMany(f => f.Icons.Select(i => new DesktopIconTarget(i.StableId, Normal(f, i)))).ToArray();
 
