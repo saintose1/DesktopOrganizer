@@ -43,6 +43,11 @@ Wallpaper settings, окна Wallpaper Engine и Explorer process не изме�
 
 ## Обычный desktop drag
 
+**Уточнение после реального воспроизведения пользователем:** прежний API smoke не запускал
+внутреннюю OLE-нормализацию Explorer и не подтверждал устранение выпадения. Зафиксировано
+перемещение всех 52 parked items при сохранении assignments; последующее исправление
+parking lifecycle описано в [Native OLE parking](FIX-NATIVE-OLE-PARKING.md).
+
 Найдены связанные опасные пути: drop-план вычислял позиции всех групп, неполный read мог
 заменить пригодный identity cache, а исключение чтения завершало живую Shell session.
 Её Dispose восстанавливал snap-to-grid, что могло вызвать общий reflow, включая parking.

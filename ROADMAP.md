@@ -7,7 +7,12 @@
 - [x] Восстановление сброшенных Explorer background/styles без записи позиций и без repaint исправного состояния.
 - [x] Shell create/delete/rename notifications; удаление только после подтверждения отсутствия, уплотнение только изменившейся группы.
 - [x] Неполные snapshots не заменяют последний пригодный cache и не сбрасывают assignments; transient read не завершает живую Shell session и не восстанавливает grid посреди drag.
-- [x] Drop позиционирует только изменившиеся группы; обычный outside drop не пишет Fence JSON и не reposition другие Fences.
+- [x] Drop layout ограничен изменившимися группами; обычный outside drop не пишет Fence JSON.
+- [x] Настоящий пользовательский drag подтвердил: Explorer переносит parked items в видимую сетку; отрицательная и положительная парковка одинаково нормализуются.
+- [x] Адресный возврат только вытолкнутых, не перетаскивавшихся items свёрнутых групп в их прежние координаты, в общей drop transaction без Arrange/JSON.
+- [x] Debug/Release: 358 tests, 0 warnings/errors; regression для наблюдавшегося OLE reflow и сохранности обычного drop point.
+- [x] Пользователь подтвердил устранение постоянного выпадения после исправления parking lifecycle: [проверка](docs/FIX-NATIVE-OLE-PARKING.md).
+- [ ] Убрать короткую вспышку между native OLE reflow и parking commit.
 - [x] Debug/Release: 0 warnings/errors, 350 tests; actual Shell/API smoke и восстановление всех 65 исходных позиций.
 - [ ] Подтверждение реальными mouse/OLE gestures с Wallpaper Engine: новый ярлык, обычный drag рядом с expanded/collapsed Fences, multi-drag и hover.
 - Отчёт и оставшиеся ручные проверки: [Explorer stabilization](docs/STABILIZATION-EXPLORER-20261017.md).

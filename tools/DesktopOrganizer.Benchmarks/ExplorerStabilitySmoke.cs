@@ -138,6 +138,24 @@ internal static class ExplorerStabilitySmoke
             Check(native.PositionCounters.Batches - counters.Batches == 1,
                 "Ordinary move issued exactly its own Shell position batch; zero unrelated Fence reposition batches");
             Check(File.ReadAllText(store.FilePath) == persisted, "Ordinary desktop move did not write Fence JSON");
+            // Replay the actual captured failure: Explorer's OLE drop also ejects an untouched parked item.
+            var parkedId = fences[1].Icons[0].StableId;
+            var secondDrop = new DesktopPoint(dropPoint.X - 150, dropPoint.Y);
+            counters = native.PositionCounters;
+            selection = new DesktopSelection([ordinary.StableId], ordinary.StableId)
+                { InitialPositions = [new(ordinary.StableId, dropPoint)] };
+            notify(new(ExplorerPointerPhase.Pressed, dropPoint, false, true) { SelectionSnapshot = Task.FromResult(selection) });
+            notify(new(ExplorerPointerPhase.DragStarted, dropPoint, false, true));
+            await native.PositionAsync([new(ordinary.StableId, secondDrop), new(parkedId, new(area.X + 50, area.Y + 50))]);
+            notify(new(ExplorerPointerPhase.Released, secondDrop, false, true));
+            await Wait(() => coordinator.ExplorerPhase == ExplorerGesturePhase.Idle);
+            snapshot = await Healthy(native);
+            Check(IconPlacement.AtTargets(snapshot, expected), "Observed OLE-reflow adapter restored only ejected collapsed parking; expanded group unchanged");
+            Check(Find(snapshot, ordinaryPath)!.Position == secondDrop, "Ordinary dragged item retained its user's drop point during parking restoration");
+            Check(native.PositionCounters.Batches - counters.Batches == 2,
+                "One simulated Explorer batch plus one parking repair batch; no general Fence relayout");
+            Check(before.SequenceEqual(fences) && File.ReadAllText(store.FilePath) == persisted,
+                "Parking repair preserved assignments and did not write Fence JSON");
             Capture("after-ordinary-move");
             await desktop.PrepareExitAsync(); desktop.Dispose(); desktop = null;
             Capture("after-graceful-exit"); CompositionState("after-graceful-exit");

@@ -27,6 +27,7 @@ public sealed class DesktopIconCoordinator : IDisposable
     private IReadOnlyList<DesktopIconTarget> _recovery = [];
     private IReadOnlyList<Fence> _fences = [];
     private Dictionary<string, DesktopIcon> _matched = new(FenceIconLayout.IdentityComparer);
+    private DesktopIcon[] _beforeExplorerDrag = [];
     private HashSet<string> _previousMissing = new(FenceIconLayout.IdentityComparer);
     private readonly Dictionary<string, string> _renames = new(FenceIconLayout.IdentityComparer);
     private readonly HashSet<string> _removed = new(FenceIconLayout.IdentityComparer);
@@ -85,6 +86,7 @@ public sealed class DesktopIconCoordinator : IDisposable
         {
             if (input.SelectionSnapshot is null) _host.Trace.Begin();
             _previousMissing.Clear();
+            _beforeExplorerDrag = _matched.Values.ToArray();
             _explorerGesture.Begin(input.Point, input.Background); _selectionRead = null;
             if (input.SelectionSnapshot is not null)
                 _selectionRead = CaptureSelectionAsync(input.SelectionSnapshot, _explorerGesture.Sequence);
@@ -160,7 +162,8 @@ public sealed class DesktopIconCoordinator : IDisposable
             // Shell refresh can reset the ListView background before item enumeration becomes consistent.
             _host.ReconcileExplorerPresentation();
             if (_initialized && _positioningAvailable && Enabled && _host.PresentationConnected &&
-                _explorerGesture.Drop is { DesktopTarget: true } drop && DropAffectsFence(drop))
+                _explorerGesture.Drop is { DesktopTarget: true } drop &&
+                (DropAffectsFence(drop) || _fences.Any(f => f.IsCollapsed && !f.Icons.IsEmpty)))
             { await ReconcileDropAsync(drop); return; }
             var snapshot = await _icons.ReadAsync(_shutdown.Token);
             if (Busy()) return;
@@ -206,9 +209,11 @@ public sealed class DesktopIconCoordinator : IDisposable
     {
         var revision = _revision; var sequence = _explorerGesture.Sequence;
         var source = _fences.ToArray(); var monitors = _monitors.ToArray();
+        var before = _beforeExplorerDrag;
         var scales = source.ToDictionary(f => f.Id, _host.GetScale);
         IReadOnlyList<Fence> changed = source;
         IReadOnlyList<DesktopIconTarget> targets = [], recovery = [];
+        var restoredParking = 0;
         var beforeCounters = (_icons as IDesktopPositionDiagnostics)?.PositionCounters ?? default;
         var beforePaints = _host.RepaintCount;
         _applyingDrop = true;
@@ -221,7 +226,11 @@ public sealed class DesktopIconCoordinator : IDisposable
                     // Runs on the Shell worker before the redraw lease. Immutable inputs and pure
                     // Core geometry only; no UI, host calls, recovery files or persistence here.
                     changed = FenceIconLayout.ApplyGroupDrop(source, drop, snapshot.Icons, snapshot.Metrics, f => scales[f.Id]);
-                    targets = FenceIconLayout.ChangedTargets(IconPlacement.ChangedFenceTargets(source, changed, monitors, snapshot.Metrics), snapshot.Icons);
+                    var layout = IconPlacement.ChangedFenceTargets(source, changed, monitors, snapshot.Metrics);
+                    var parking = IconPlacement.DisplacedParking(changed, before, snapshot, drop.DraggedIds, monitors);
+                    restoredParking = parking.Count;
+                    targets = FenceIconLayout.ChangedTargets(layout.Concat(parking)
+                        .DistinctBy(t => t.StableId, FenceIconLayout.IdentityComparer).ToArray(), snapshot.Icons);
                     _host.Trace.Mark("Assignment/layout.proposal", drop.DraggedIds.Count);
                     return targets;
                 },
@@ -239,10 +248,10 @@ public sealed class DesktopIconCoordinator : IDisposable
             ApplySnapshot(positioned); CompleteRecovery(recovery);
             var counters = (_icons as IDesktopPositionDiagnostics)?.PositionCounters ?? default;
             var target = FenceIconLayout.DropTarget(changed, drop.Point, f => scales[f.Id]);
-            _logger.LogInformation("Desktop drop reconciled: SelectedCount={Selected}; DraggedItemIdHash={Item}; TargetFence={Fence}; AssignedAfterDrop={Assigned}; MovedTargets={Targets}; BulkCalls={Batches}; ShellRedrawCompletions={Redraw}; ExtraRepaints={Paints}",
+            _logger.LogInformation("Desktop drop reconciled: SelectedCount={Selected}; DraggedItemIdHash={Item}; TargetFence={Fence}; AssignedAfterDrop={Assigned}; MovedTargets={Targets}; RestoredParking={Parked}; BulkCalls={Batches}; ShellRedrawCompletions={Redraw}; ExtraRepaints={Paints}",
                 drop.DraggedIds.Count, IdentityHash(drop.DraggedItemId), target?.Id,
                 changed.SelectMany(f => f.Icons).Count(i => drop.DraggedIds.Contains(i.StableId, FenceIconLayout.IdentityComparer)),
-                targets.Count, counters.Batches - beforeCounters.Batches, counters.RedrawCompletions - beforeCounters.RedrawCompletions, _host.RepaintCount - beforePaints);
+                targets.Count, restoredParking, counters.Batches - beforeCounters.Batches, counters.RedrawCompletions - beforeCounters.RedrawCompletions, _host.RepaintCount - beforePaints);
             if (_explorerGesture.Sequence == sequence) CompleteGesture();
         }
         finally { _applyingDrop = false; }
@@ -298,7 +307,7 @@ public sealed class DesktopIconCoordinator : IDisposable
     private void CompleteGesture()
     {
         _host.Trace.Complete(_explorerGesture.Drop is null ? "selection/click/cancel" : "drop");
-        _explorerGesture.Reset(); _selectionRead = null;
+        _explorerGesture.Reset(); _selectionRead = null; _beforeExplorerDrag = [];
         if (_layoutDeferred) { _layoutDeferred = false; QueueAll(); }
         GestureSettled?.Invoke();
     }

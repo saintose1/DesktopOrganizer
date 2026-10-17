@@ -48,10 +48,12 @@ dotnet test DesktopOrganizer.sln -c Release --no-build
 303 теста проходят в каждой**. Unit tests не заменяют проверку настоящих mouse/OLE
 жестов, визуальной плавности и конкретной конфигурации Explorer.
 
-После точечных исправлений Explorer integration проверены Debug/Release и **350 тестов
+После точечных исправлений Explorer integration проверены Debug/Release и **358 тестов
 в каждой конфигурации**. Проверки на настоящем Explorer включают создание desktop item,
 удаление/уплотнение, rename, изоляцию обычного перемещения и восстановление состояния.
 Границы этих API-проверок и ручной checklist: [Explorer stabilization](docs/STABILIZATION-EXPLORER-20261017.md).
+Отдельно воспроизведён native OLE reflow скрытых значков и добавлен адресный возврат
+вытолкнутых items в прежнюю парковку: [Native OLE parking](docs/FIX-NATIVE-OLE-PARKING.md).
 
 ## Запуск
 
