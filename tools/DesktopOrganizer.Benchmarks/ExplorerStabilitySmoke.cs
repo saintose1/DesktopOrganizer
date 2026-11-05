@@ -56,6 +56,7 @@ internal static class ExplorerStabilitySmoke
         double? wallpaperBaseline = null;
         var wallpaperSamples = new Dictionary<string, double>();
         DesktopHandles? observedHandles = null;
+        string? parentPresentation = null;
         DesktopArea sample = default;
         Exception? scenarioFailure = null;
         try
@@ -82,8 +83,9 @@ internal static class ExplorerStabilitySmoke
             }
             Check(host.Connect(), "Validated real Explorer host available");
             observedHandles = host.Handles;
+            parentPresentation = ParentPresentation();
             var area = host.GetArea();
-            sample = new(area.X + area.Width / 2, area.Y + area.Height * 3 / 4, Math.Min(180, area.Width / 8), Math.Min(100, area.Height / 8));
+            sample = new(area.X, area.Y + area.Height * 3 / 4, area.Width, Math.Min(100, area.Height / 8));
             DesktopShell.ShowDesktop(); await Task.Delay(250);
             CompositionState("before-surfaces");
             wallpaperBaseline = await Capture("before-surfaces");
@@ -245,6 +247,7 @@ internal static class ExplorerStabilitySmoke
             IconPlacement.Targets(fences, host.GetMonitorAreas(), current.Metrics)));
         async Task<double?> Capture(string label)
         {
+            Check(ParentPresentation() == parentPresentation, label + " preserved Explorer parent layered attributes");
             // Shell positions are synchronous, desktop composition is not. Sample a presented frame.
             var presented = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using (new DesktopCompositionClock().Subscribe(_ => presented.TrySetResult(), error => presented.TrySetException(error)))
@@ -265,6 +268,8 @@ internal static class ExplorerStabilitySmoke
             if (wallpaperBaseline is < 0.5) Check(ratio < 0.9, label + " did not blacken the sampled wallpaper region");
             return ratio;
         }
+        string ParentPresentation() => DesktopDiagnostics.WallpaperWindowTree(observedHandles!)
+            .Single(line => line.Contains("class=SHELLDLL_DefView;", StringComparison.Ordinal));
         void CompositionState(string label)
         {
             if (observedHandles is null || !new DesktopDiscovery(NullLogger<DesktopDiscovery>.Instance).Validate(observedHandles)) return;

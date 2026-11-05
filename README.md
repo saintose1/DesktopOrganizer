@@ -48,16 +48,17 @@ dotnet test DesktopOrganizer.sln -c Release --no-build
 303 теста проходят в каждой**. Unit tests не заменяют проверку настоящих mouse/OLE
 жестов, визуальной плавности и конкретной конфигурации Explorer.
 
-После точечных исправлений Explorer integration проверены Debug/Release и **359 тестов
+После точечных исправлений Explorer integration проверены Debug/Release и **360 тестов
 в каждой конфигурации**. Проверки на настоящем Explorer включают создание desktop item,
 удаление/уплотнение, rename, изоляцию обычного перемещения и восстановление состояния.
 Границы этих API-проверок и ручной checklist: [Explorer stabilization](docs/STABILIZATION-EXPLORER-20261017.md).
 Отдельно воспроизведён native OLE reflow скрытых значков и добавлен адресный возврат
 вытолкнутых items в прежнюю парковку: [Native OLE parking](docs/FIX-NATIVE-OLE-PARKING.md).
 Для короткой post-drop вспышки ускорены чтение текущих позиций и обработка отпускания мыши;
-исчезновение видимого flash ещё требует физической проверки. В повторном native smoke
-также воспроизведён чёрный wallpaper sample при создании surfaces с Wallpaper Engine —
-полностью закрытым этот rendering-сценарий пока не считается.
+исчезновение видимого flash ещё требует физической проверки. Для чёрных областей с
+Wallpaper Engine удалён layered/color-key режим Explorer ListView; используется его
+штатная прозрачность и native input. Проверки и ограничения:
+[Native wallpaper composition](docs/FIX-WALLPAPER-NATIVE-COMPOSITION.md).
 
 ## Запуск
 

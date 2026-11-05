@@ -309,13 +309,14 @@ static Task<int> WallpaperCompositionProbe(string directory)
                 await Task.Delay(150);
                 var area = DesktopDiagnostics.MonitorAreas().First();
                 var sample = new DesktopArea(area.X + area.Width / 2, area.Y + area.Height * 3 / 4, 180, 100);
-                foreach (var mode in new[] { "original", "body-only", "header-only", "key-only", "full-key", "key-transparent", "native-transparent" })
+                foreach (var mode in new[] { "original", "body-only", "header-only", "native-transparent", "native-double-buffer" })
                 {
                     using (var host = new Win32DesktopHost(discovery, NullLogger<Win32DesktopHost>.Instance))
                     {
                         if (!host.Connect()) throw new InvalidOperationException("Desktop host lost.");
                         DesktopDiagnostics.SetProbeIconComposition(host, false);
-                        var fence = new Fence(Guid.NewGuid(), "Wallpaper composition probe", Math.Round(area.X + area.Width * .65), Math.Round(area.Y + area.Height * .25), 300, 220);
+                        var fence = new Fence(Guid.NewGuid(), "Wallpaper composition probe", Math.Round(area.X + area.Width * .65), Math.Round(area.Y + area.Height * .25), 300, 220,
+                            appearance: new FenceAppearance(bodyColor: "#EA40C0", bodyOpacity: 70));
                         var scale = host.GetScale(fence);
                         var layout = FenceSurfaceLayout.Clip(fence, host.GetArea(), scale) ?? throw new InvalidOperationException("No probe bounds.");
                         if (mode != "original")

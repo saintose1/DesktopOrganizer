@@ -136,7 +136,7 @@ public static class DesktopDiagnostics
         return $"Visible={NativeMethods.IsWindowVisible(handles.IconList)}; ex=0x{NativeMethods.GetWindowStyle(handles.IconList, -20):X}; styles=0x{NativeMethods.SendMessage(handles.IconList, 0x1037, 0, 0):X}; bg=0x{NativeMethods.SendMessage(handles.IconList, 0x1000, 0, 0):X}; textBg=0x{NativeMethods.SendMessage(handles.IconList, 0x1025, 0, 0):X}; layeredAttributes={attributes}";
     }
     /// <summary>Actual lease/property transitions only, without synthesizing any Explorer mouse/OLE gesture.</summary>
-    public static IReadOnlyList<string> CheckMarqueeCompositionLease(bool outline = true)
+    public static IReadOnlyList<string> CheckMarqueeCompositionLease()
     {
         var discovery = new DesktopDiscovery(Microsoft.Extensions.Logging.Abstractions.NullLogger<DesktopDiscovery>.Instance);
         var handles = discovery.Find() ?? throw new InvalidOperationException("No Explorer desktop.");
@@ -150,7 +150,6 @@ public static class DesktopDiagnostics
             var empty = CompositionState(handles);
             if (empty != before) throw new InvalidOperationException("A host with no Fence changed Explorer composition.");
             result.Add("No Fence: " + empty);
-            host.SetOutlineSelectionForProbe(outline);
             var fence = new DesktopOrganizer.Core.Models.Fence(Guid.NewGuid(), "Composition probe", 1900, 1000, 300, 200);
             var layout = FenceSurfaceLayout.Clip(fence, host.GetArea(), host.GetScale(fence)) ?? throw new InvalidOperationException("No probe area.");
             host.Update(fence, layout, host.GetScale(fence), null);
@@ -162,14 +161,9 @@ public static class DesktopDiagnostics
             trace.Begin();
             host.PrepareNativeSelection();
             var native = CompositionState(handles);
-            if (outline)
-            {
-                var styles = (uint)NativeMethods.SendMessage(handles.IconList, 0x1037, 0, 0);
-                var expected = idle.Replace($"styles=0x{styles | 0x10000:X}", $"styles=0x{styles:X}");
-                if ((styles & 0x10000) != 0 || native != expected)
-                    throw new InvalidOperationException("Outline selection changed more than its double-buffering bit.");
-            }
-            else if (native != before) throw new InvalidOperationException("Native marquee composition differs from original Explorer.");
+            if (native != idle) throw new InvalidOperationException("Native selection changed Explorer composition.");
+            if (((uint)NativeMethods.GetWindowStyle(handles.IconList, -20) & NativeMethods.Layered) != 0)
+                throw new InvalidOperationException("Fence added a layered Explorer ListView.");
             result.Add("Native selection backing: " + native);
             host.PrepareNativeSelection();
             if (CompositionState(handles) != native) throw new InvalidOperationException("Repeated marquee begin changed active composition.");
@@ -178,20 +172,17 @@ public static class DesktopDiagnostics
             host.FinishNativeSelection();
             if (CompositionState(handles) != idle || host.BitmapPresentCount != presents)
                 throw new InvalidOperationException("Marquee rebuilt Fence bitmaps or changed state after repeated completion.");
-            if (outline && trace.Snapshot.Any(p => p.Stage.StartsWith("RedrawWindow", StringComparison.Ordinal)))
+            if (trace.Snapshot.Any(p => p.Stage.StartsWith("RedrawWindow", StringComparison.Ordinal)))
                 throw new InvalidOperationException("Stable marquee performed an additional composition repaint.");
             result.Add("Fence restored: " + CompositionState(handles));
-            if (outline)
-            {
-                host.PrepareNativeSelection();
-                host.SetCompositionForProbe(false);
-                host.FinishNativeSelection();
-                if (CompositionState(handles) != before)
-                    throw new InvalidOperationException("Disabling Fence during selection did not restore Explorer properties.");
-                host.SetCompositionForProbe(true);
-                host.PrepareNativeSelection(); // Dispose must also restore an unfinished selection.
-                result.Add("PASS: double buffering idle/after selection; only its bit changes during selection; 0 extra composition redraws; no Fence bitmap presents; disable during selection; unfinished selection shutdown");
-            }
+            host.PrepareNativeSelection();
+            host.SetCompositionForProbe(false);
+            host.FinishNativeSelection();
+            if (CompositionState(handles) != before)
+                throw new InvalidOperationException("Disabling Fence during selection did not restore Explorer properties.");
+            host.SetCompositionForProbe(true);
+            host.PrepareNativeSelection(); // Dispose must also restore an unfinished selection.
+            result.Add("PASS: native transparent/double-buffered ListView; no style/key changes during selection; 0 extra redraws; no Fence bitmap presents; disable during selection; unfinished selection shutdown");
         }
         if (CompositionState(handles) != before) throw new InvalidOperationException("Explorer properties were not restored.");
         result.Add("Shutdown restored: " + before);
@@ -220,24 +211,20 @@ public static class DesktopDiagnostics
         }, 0);
     }
     public static void SetProbeIconComposition(Win32DesktopHost host, bool enabled) => host.SetCompositionForProbe(enabled);
-    public static void SetProbeNativeSelection(Win32DesktopHost host, bool enabled) => host.SetNativeSelectionForProbe(enabled);
-    public static void SetProbeOutlineSelection(Win32DesktopHost host, bool enabled) => host.SetOutlineSelectionForProbe(enabled);
     /// <summary>Diagnostic-only reversible modes; caller must dispose its host before trying another mode.</summary>
     public static void SetWallpaperProbeMode(Win32DesktopHost host, string mode)
     {
         var handles = host.Handles ?? throw new InvalidOperationException("No desktop host.");
         if (!new DesktopDiscovery(Microsoft.Extensions.Logging.Abstractions.NullLogger<DesktopDiscovery>.Instance).Validate(handles))
             throw new InvalidOperationException("Desktop host validation failed.");
-        var key = mode is "key-only" or "full-key" or "key-transparent";
-        host.SetCompositionForProbe(key);
-        if (mode is "key-transparent" or "native-transparent")
+        host.SetCompositionForProbe(mode == "native-double-buffer");
+        if (mode == "native-transparent")
         {
-            NativeMethods.SendMessage(handles.IconList, 0x1036, 0x00400000, 0x00400000);
-            if (mode == "native-transparent") NativeMethods.SendMessage(handles.IconList, 0x1001, 0, -1);
+            NativeMethods.SendMessage(handles.IconList, 0x1036, 0x00410000, 0x00400000);
+            NativeMethods.SendMessage(handles.IconList, 0x1001, 0, -1);
             if (!NativeMethods.RedrawWindow(handles.Host, 0, 0, 0x185)) throw new Win32Exception(Marshal.GetLastWin32Error());
         }
-        ShowOwnProbeLayers(host, mode is not "original" and not "header-only" and not "key-only",
-            mode is not "original" and not "body-only" and not "key-only");
+        ShowOwnProbeLayers(host, mode is not "original" and not "header-only", mode is not "original" and not "body-only");
         host.EnsureStacking();
     }
     /// <summary>Read-only class/PID/style hierarchy; captions and filesystem paths are deliberately omitted.</summary>

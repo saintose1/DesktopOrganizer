@@ -32,7 +32,7 @@ internal static class Program
         if (args.Length == 1 && args[0] == "--composition-ab") return CompositionAB.Run();
         if (args.Length == 1 && args[0] == "--outline-composition")
         {
-            foreach (var line in DesktopDiagnostics.CheckMarqueeCompositionLease(outline: true)) Console.WriteLine(line);
+            foreach (var line in DesktopDiagnostics.CheckMarqueeCompositionLease()) Console.WriteLine(line);
             return 0;
         }
         if (args.Length == 1 && args[0] == "--selection-enumeration")

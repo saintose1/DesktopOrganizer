@@ -25,8 +25,6 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     private bool _stackingDirty;
     private ExplorerIconLayer? _iconLayer;
     private bool _probeCompositionEnabled = true;
-    private bool _probeNativeSelectionEnabled = true;
-    private bool _outlineMarquee = true;
     private readonly List<DesktopBounds> _damage = [];
     private int _suppressExplorerPaint;
     public long RepaintCount { get; private set; }
@@ -70,7 +68,7 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     public bool HasExplorerGesture => _iconEvents.GestureActive;
     public void SetSelectionReader(IDesktopSelectionReader? reader) => _iconEvents.SelectionReader = reader;
     public bool IsNativeSelection => _iconLayer?.NativeSelection == true;
-    internal void PrepareNativeSelection() { if (_probeNativeSelectionEnabled) _iconLayer?.BeginNativeSelection(); }
+    internal void PrepareNativeSelection() => _iconLayer?.BeginNativeSelection();
     public void FinishNativeSelection() => _iconLayer?.EndNativeSelection();
     public event Action<Fence>? CollapseRequested;
     internal void NotifyCollapse(Fence fence) => CollapseRequested?.Invoke(fence);
@@ -81,8 +79,6 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     public int SurfaceCount => _windows.Count;
     public string Diagnostics => Handles is null ? discovery.LastDiagnostics : Handles.ToString();
     internal void SetCompositionForProbe(bool enabled) { _probeCompositionEnabled = enabled; _iconLayer?.SetEnabled(enabled && _windows.Count != 0); }
-    internal void SetNativeSelectionForProbe(bool enabled) => _probeNativeSelectionEnabled = enabled;
-    internal void SetOutlineSelectionForProbe(bool enabled) { _outlineMarquee = enabled; _iconLayer?.SetOutlineForProbe(enabled); }
     public double DpiScale => Handles is null ? 1 : Math.Max(1, NativeMethods.GetDpiForWindow(Handles.Host) / 96.0);
     internal void NotifyInteraction(FenceInteractionEventArgs args)
     {
@@ -136,7 +132,7 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         foreach (var surface in _windows.Values) if (!OwnWindow(surface.Frame) || !OwnWindow(surface.Background)) { lost = true; break; }
         if (found != Handles || lost) { Clear(); _iconLayer?.Dispose(); _iconLayer = null; Handles = found; }
         if (Handles is null) { _iconEvents.Connect(null); return false; }
-        _iconLayer ??= new ExplorerIconLayer(Handles, discovery, _logger, presentationRecoveryPath, _probeCompositionEnabled && _windows.Count != 0, Trace, _outlineMarquee);
+        _iconLayer ??= new ExplorerIconLayer(Handles, discovery, _logger, presentationRecoveryPath, _probeCompositionEnabled && _windows.Count != 0, Trace);
         _iconEvents.Changed -= OnIconsChanged;
         _iconEvents.Changed += OnIconsChanged;
         _iconEvents.Renamed -= OnIconRenamed;
@@ -145,10 +141,6 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         _iconEvents.Removed += OnIconRemoved;
         _iconEvents.StackingChanged -= OnStackingChanged;
         _iconEvents.StackingChanged += OnStackingChanged;
-        _iconEvents.BackgroundPress -= OnBackgroundPress;
-        _iconEvents.BackgroundPress += OnBackgroundPress;
-        _iconEvents.BackgroundPressClassified -= OnBackgroundPressClassified;
-        _iconEvents.BackgroundPressClassified += OnBackgroundPressClassified;
         _iconEvents.Pointer -= OnExplorerPointer;
         _iconEvents.Pointer += OnExplorerPointer;
         _iconEvents.PointerMoved -= OnHoverPointerMoved;
@@ -354,14 +346,8 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         }
         finally { if (part != 0) NativeMethods.DeleteObject(part); NativeMethods.DeleteObject(region); }
     }
-    private void OnBackgroundPress() => PrepareNativeSelection();
-    private void OnBackgroundPressClassified() { if (_probeNativeSelectionEnabled) _iconLayer?.PrepareBackgroundSelection(); }
     private void OnExplorerPointer(ExplorerPointerEvent input)
     {
-        // A rapid icon press may arrive before the previous marquee's release
-        // observation. Restore buffering first; a newly classified background
-        // press will prepare outline mode again before forwarded native DOWN.
-        if (input.Phase == ExplorerPointerPhase.Pressed) FinishNativeSelection();
         ExplorerPointer?.Invoke(input);
     }
     private void OnStackingChanged()

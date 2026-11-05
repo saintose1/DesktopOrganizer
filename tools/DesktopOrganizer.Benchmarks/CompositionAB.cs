@@ -29,8 +29,7 @@ internal static class CompositionAB
         var window = new Window { Title = "DesktopOrganizer — A/B composition diagnostics", Content = panel, Width = 620, Height = 560 };
         panel.Children.Add(new TextBlock { Text = "Только диагностика слоёв. Реальные иконки не перемещаются.", TextWrapping = TextWrapping.Wrap });
         var stages = new[] { "0 — Без surfaces / исходный Explorer", "1 — Только ListView color key", "2 — Только background / исходный ListView",
-            "3 — Только header / исходный ListView", "4 — Полный Fence / прежний alpha color key", "5 — Полный Fence / прежний native guard",
-            "6 — Полный Fence / контурная рамка, буферизация icons" };
+            "3 — Только header / исходный ListView", "4 — Полный Fence / native transparency" };
         var selected = 0;
         void Stage(int index)
         {
@@ -38,15 +37,13 @@ internal static class CompositionAB
             host = new(discovery, NullLogger<Win32DesktopHost>.Instance);
             if (!host.Connect()) throw new InvalidOperationException("Host not connected.");
             host.SetSelectionReader(icons);
-            DesktopDiagnostics.SetProbeNativeSelection(host, index is 5 or 6);
-            DesktopDiagnostics.SetProbeOutlineSelection(host, index == 6);
             if (index != 0)
             {
                 if (index is 2 or 3) DesktopDiagnostics.SetProbeIconComposition(host, false);
                 var fence = new Fence(Guid.NewGuid(), "A/B Fence", 700, 320, 600, 450);
                 var scale = host.GetScale(fence); var layout = FenceSurfaceLayout.Clip(fence, host.GetArea(), scale)!.Value;
                 host.Update(fence, layout, scale, new FenceBitmapRenderer().Render(fence, layout, scale));
-                DesktopDiagnostics.ShowOwnProbeLayers(host, index is 2 or 4 or 5 or 6, index is 3 or 4 or 5 or 6);
+                DesktopDiagnostics.ShowOwnProbeLayers(host, index is 2 or 4, index is 3 or 4);
                 host.EnsureStacking(); host.FlushPainting();
             }
             var text = stages[index] + "\n" + host.Diagnostics + "\n" + DesktopDiagnostics.CompositionState(handles);

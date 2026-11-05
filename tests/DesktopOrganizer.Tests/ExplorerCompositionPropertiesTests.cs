@@ -8,28 +8,30 @@ namespace DesktopOrganizer.Tests;
 public sealed class ExplorerCompositionPropertiesTests
 {
     [Fact]
-    public void DarkBackgroundIsNeverExposedBeforeItsColorKeyIsInstalled()
+    public void NativeCompositionNeverAddsALayeredOrColorKeyExplorerWindow()
     {
         WithOwnedWindow((window, writes) =>
         {
+            var originalExtended = NativeMethods.GetWindowStyle(window, -20);
             ExplorerIconLayer.ApplyFenceProperties(window);
 
             var background = Assert.Single(writes, w => w.Message == 0x1001);
-            Assert.Equal(0x030201u, background.Color);
-            Assert.True(background.Layered);
-            Assert.True(background.KeyConfigured);
-            Assert.Equal(background.Color, background.Key);
+            Assert.Equal(uint.MaxValue, background.Color);
+            Assert.False(background.Layered);
+            Assert.False(background.KeyConfigured);
+            Assert.Equal(0x00410000u, (uint)NativeMethods.SendMessage(window, 0x1037, 0, 0) & 0x00410000);
+            Assert.Equal(originalExtended, NativeMethods.GetWindowStyle(window, -20));
         });
     }
 
     [Theory]
     [InlineData(0xFFFFFFFFu, 0xFFFFFFFFu)] // Explorer wallpaper-backed transparent colors.
     [InlineData(0xA06020u, 0x907030u)] // Preserve an original configured background, too.
-    public void RestorePutsOriginalBackgroundBackBeforeRemovingLayeredBacking(uint originalBackground, uint originalTextBackground)
+    public void LegacyJournalRestoresOriginalBackgroundBeforeRemovingOldLayeredBacking(uint originalBackground, uint originalTextBackground)
     {
         WithOwnedWindow((window, writes) =>
         {
-            ExplorerIconLayer.ApplyFenceProperties(window);
+            InstallLegacyKey(window);
             writes.Clear();
             ExplorerIconLayer.RestoreProperties(window, NativeMethods.ToolWindow, 0x00400000, originalBackground, originalTextBackground);
 
@@ -61,6 +63,21 @@ public sealed class ExplorerCompositionPropertiesTests
     }
 
     [Fact]
+    public void RestoringUnchangedNativeStateDoesNotRewriteItsBacking()
+    {
+        WithOwnedWindow((window, writes) =>
+        {
+            ExplorerIconLayer.ApplyFenceProperties(window);
+            var extended = (uint)NativeMethods.GetWindowStyle(window, -20);
+            var styles = (uint)NativeMethods.SendMessage(window, 0x1037, 0, 0);
+            writes.Clear();
+            Assert.False(ExplorerIconLayer.RestoreProperties(window, extended, styles, uint.MaxValue, uint.MaxValue));
+            Assert.Empty(writes);
+            Assert.Equal((nint)extended, NativeMethods.GetWindowStyle(window, -20));
+        });
+    }
+
+    [Fact]
     public void InvalidWindowPropertyFailureIsReported()
     {
         Assert.Throws<Win32Exception>(() => ExplorerIconLayer.ApplyFenceProperties(0));
@@ -81,8 +98,8 @@ public sealed class ExplorerCompositionPropertiesTests
 
     [Theory]
     [InlineData(0u)] // Opaque black backing after a desktop refresh.
-    [InlineData(0xFFFFFFFFu)] // Original Explorer transparent/wallpaper-backed state.
-    public void DesktopRefreshBackgroundResetRepairsOwnedKeyBeforePainting(uint refreshedColor)
+    [InlineData(0x030201u)] // A stale key-colored background from the old renderer.
+    public void DesktopRefreshBackgroundResetRestoresNativeTransparency(uint refreshedColor)
     {
         WithOwnedWindow((window, writes) =>
         {
@@ -91,8 +108,9 @@ public sealed class ExplorerCompositionPropertiesTests
             writes.Clear();
             Assert.True(ExplorerIconLayer.EnsureFenceProperties(window));
             var repaired = Assert.Single(writes, w => w.Message == 0x1001);
-            Assert.Equal(0x030201u, repaired.Color);
-            Assert.True(repaired.KeyConfigured);
+            Assert.Equal(uint.MaxValue, repaired.Color);
+            Assert.False(repaired.KeyConfigured);
+            Assert.False(repaired.Layered);
             writes.Clear();
             Assert.False(ExplorerIconLayer.EnsureFenceProperties(window));
             Assert.Empty(writes);
@@ -100,20 +118,21 @@ public sealed class ExplorerCompositionPropertiesTests
     }
 
     [Fact]
-    public void ExplorerRemovingOurLayeredStyleCanBeRepaired()
+    public void ExplorerRemovingNativeTransparencyCanBeRepairedWithoutAddingLayeredStyle()
     {
         WithOwnedWindow((window, writes) =>
         {
             ExplorerIconLayer.ApplyFenceProperties(window);
-            NativeMethods.SetWindowStyle(window, -20, (nint)NativeMethods.ToolWindow);
+            NativeMethods.SendMessage(window, 0x1036, 0x00410000, 0);
             writes.Clear();
             Assert.True(ExplorerIconLayer.EnsureFenceProperties(window));
-            Assert.True(Assert.Single(writes, w => w.Message == 0x1001).KeyConfigured);
+            Assert.False(Assert.Single(writes, w => w.Message == 0x1001).Layered);
+            Assert.Equal(0x00410000u, (uint)NativeMethods.SendMessage(window, 0x1037, 0, 0) & 0x00410000);
         });
     }
 
     [Fact]
-    public void NewItemRefreshRestoringParentPaintAndNativeBackgroundRepairsTheWholeOwnedComposition()
+    public void NewItemRefreshWithNativeParentPaintNeedsNoCompositionRewrite()
     {
         WithOwnedWindow((window, writes) =>
         {
@@ -122,11 +141,10 @@ public sealed class ExplorerCompositionPropertiesTests
             NativeMethods.SendMessage(window, 0x1001, 0, -1);
             writes.Clear();
 
-            Assert.True(ExplorerIconLayer.EnsureFenceProperties(window));
-            Assert.Equal(0x00010000u, (uint)NativeMethods.SendMessage(window, 0x1037, 0, 0) & 0x00410000);
-            Assert.Equal(0x030201u, (uint)NativeMethods.SendMessage(window, 0x1000, 0, 0));
-            Assert.True(Assert.Single(writes, w => w.Message == 0x1001).KeyConfigured);
-            writes.Clear();
+            Assert.False(ExplorerIconLayer.EnsureFenceProperties(window));
+            Assert.Equal(0x00410000u, (uint)NativeMethods.SendMessage(window, 0x1037, 0, 0) & 0x00410000);
+            Assert.Equal(uint.MaxValue, (uint)NativeMethods.SendMessage(window, 0x1000, 0, 0));
+            Assert.Empty(writes);
             Assert.False(ExplorerIconLayer.EnsureFenceProperties(window));
             Assert.Empty(writes);
         });
@@ -140,8 +158,8 @@ public sealed class ExplorerCompositionPropertiesTests
             ExplorerIconLayer.ApplyFenceProperties(window);
             const uint unrelated = 0x00000020;
             NativeMethods.SendMessage(window, 0x1036, (nint)(0x00410000 | unrelated), (nint)(0x00410000 | unrelated));
-            Assert.True(ExplorerIconLayer.EnsureFenceProperties(window));
-            Assert.Equal(unrelated | 0x00010000u, (uint)NativeMethods.SendMessage(window, 0x1037, 0, 0));
+            Assert.False(ExplorerIconLayer.EnsureFenceProperties(window));
+            Assert.Equal(unrelated | 0x00410000u, (uint)NativeMethods.SendMessage(window, 0x1037, 0, 0));
         });
     }
 
@@ -151,9 +169,11 @@ public sealed class ExplorerCompositionPropertiesTests
         WithOwnedWindow((window, writes) =>
         {
             ExplorerIconLayer.ApplyFenceProperties(window);
+            NativeMethods.SetWindowStyle(window, -20, (nint)(NativeMethods.ToolWindow | NativeMethods.Layered));
             Assert.True(NativeMethods.SetLayeredWindowAttributes(window, 0, 150, 2));
             writes.Clear();
             Assert.Throws<InvalidOperationException>(() => ExplorerIconLayer.EnsureFenceProperties(window));
+            Assert.Throws<InvalidOperationException>(() => ExplorerIconLayer.ApplyFenceProperties(window));
             Assert.Throws<InvalidOperationException>(() => ExplorerIconLayer.RestoreProperties(window, 0, 0, uint.MaxValue, uint.MaxValue));
             Assert.Empty(writes);
             Assert.True(NativeMethods.GetLayeredWindowAttributes(window, out _, out var alpha, out var flags));
@@ -163,6 +183,14 @@ public sealed class ExplorerCompositionPropertiesTests
     }
 
     private readonly record struct ColorWrite(uint Message, uint Color, bool Layered, bool KeyConfigured, uint Key);
+
+    private static void InstallLegacyKey(nint window)
+    {
+        NativeMethods.SetWindowStyle(window, -20, (nint)(NativeMethods.ToolWindow | NativeMethods.Layered));
+        Assert.True(NativeMethods.SetLayeredWindowAttributes(window, 0x030201, 255, 1));
+        NativeMethods.SendMessage(window, 0x1001, 0, 0x030201);
+        NativeMethods.SendMessage(window, 0x1026, 0, 0);
+    }
 
     private static void WithOwnedWindow(Action<nint, List<ColorWrite>> test)
     {
