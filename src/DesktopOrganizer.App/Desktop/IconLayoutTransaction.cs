@@ -5,15 +5,20 @@ namespace DesktopOrganizer.App.Desktop;
 /// <summary>The proposal remains private until Shell positioning is read back and the durable commit succeeds.</summary>
 public sealed class IconLayoutTransaction(IDesktopIconService icons)
 {
+    /// <param name="keepOnRollback">
+    /// Targets that repair state independent of the proposal (re-parking items Explorer pushed onto the desktop).
+    /// A rejected commit must never move them back to the positions Explorer displaced them to.
+    /// </param>
     public async Task<DesktopIconSnapshot> ApplyPlannedAsync(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout,
-        Func<DesktopIconSnapshot, Task<bool>> commit, CancellationToken cancellationToken = default)
+        Func<DesktopIconSnapshot, Task<bool>> commit, CancellationToken cancellationToken = default, Func<string, bool>? keepOnRollback = null)
     {
         IReadOnlyList<DesktopIconTarget> targets = [], rollback = [];
         IReadOnlyList<DesktopIconTarget> Plan(DesktopIconSnapshot snapshot)
         {
             targets = layout(snapshot);
             var matched = FenceIconLayout.Match(snapshot.Icons);
-            rollback = targets.Where(t => matched.ContainsKey(t.StableId)).Select(t => new DesktopIconTarget(t.StableId, matched[t.StableId].Position)).ToArray();
+            rollback = targets.Where(t => matched.ContainsKey(t.StableId) && keepOnRollback?.Invoke(t.StableId) != true)
+                .Select(t => new DesktopIconTarget(t.StableId, matched[t.StableId].Position)).ToArray();
             return targets;
         }
         try

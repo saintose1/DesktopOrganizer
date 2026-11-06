@@ -128,12 +128,14 @@ internal sealed class DesktopIconEvents : IDisposable
         if (handles is null || !NativeMethods.IsWindow(handles.IconList)) return;
         if (kind >= 0x8000 && window != handles.IconList) return;
         if (kind is 0x8000 or 0x8001 or 0x800C && (objectId != -4 || childId <= 0)) return; // OBJID_CLIENT item only
-        if (kind < 0x8000 && !(kind == 0xF && _dragNotified) &&
+        // OLE owns capture on its own window during a drag; its CAPTUREEND marks the end of Explorer's drop.
+        if (kind < 0x8000 && !(kind is 0xF or 0x9 && _dragNotified) &&
             window != handles.IconList && window != handles.DefView && window != handles.Progman && window != handles.WorkerW) return;
         // Subscribers enqueue work and do not make Shell/COM calls from the reentrant callback.
         if (kind == 0x8004) StackingChanged?.Invoke();
         if (kind == 0xE) NotifyDrag();
         if (kind == 0xF) _trace?.Mark("Explorer.OLE.end");
+        if (kind == 0x9 && _dragNotified) _trace?.Mark("Explorer.capture.end");
         if (kind == 0xF && _desktopPress && _dragNotified && (NativeMethods.GetAsyncKeyState(1) & 0x8000) != 0)
         {
             // Escape/right-button cancellation can finish OLE while the physical left button is still held.

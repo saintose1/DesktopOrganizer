@@ -38,19 +38,25 @@ public static class IconPlacement
     public static IReadOnlyList<DesktopIconTarget> ReturnPositions(IReadOnlyList<Fence> fences) => fences
         .SelectMany(f => f.Icons.Select(i => new DesktopIconTarget(i.StableId, Normal(f, i)))).ToArray();
 
-    /// <summary>Explorer can bring offscreen items back into its grid after OLE drop; preserve only untouched collapsed parking.</summary>
+    /// <summary>
+    /// Explorer can bring offscreen items back into its grid after OLE drop. Every untouched item of a collapsed
+    /// group that is visible after the drop is parked again: at its exact previous parking position when it was
+    /// parked before the gesture, otherwise at its canonical parking slot (an earlier interrupted repair must not
+    /// leave items stranded on the desktop).
+    /// </summary>
     public static IReadOnlyList<DesktopIconTarget> DisplacedParking(IReadOnlyList<Fence> fences, IReadOnlyList<DesktopIcon> before,
         DesktopIconSnapshot after, IReadOnlyList<string> draggedIds, IReadOnlyList<DesktopArea> monitors)
     {
         if (!after.Connected || !after.CanPosition || after.Error is not null || monitors.Count == 0) return [];
         var previous = FenceIconLayout.Match(before); var current = FenceIconLayout.Match(after.Icons);
         var dragged = draggedIds.ToHashSet(FenceIconLayout.IdentityComparer);
+        var canonical = Targets(fences, monitors, after.Metrics).ToDictionary(t => t.StableId, t => t.Position, FenceIconLayout.IdentityComparer);
         bool Visible(DesktopIcon icon) => monitors.Any(m => icon.Bounds.X < m.X + m.Width && icon.Bounds.X + icon.Bounds.Width > m.X &&
             icon.Bounds.Y < m.Y + m.Height && icon.Bounds.Y + icon.Bounds.Height > m.Y);
         return fences.Where(f => f.IsCollapsed).SelectMany(f => f.Icons)
-            .Where(i => !dragged.Contains(i.StableId) && previous.TryGetValue(i.StableId, out var old) && !Visible(old) &&
-                current.TryGetValue(i.StableId, out var item) && Visible(item))
-            .Select(i => new DesktopIconTarget(i.StableId, previous[i.StableId].Position)).ToArray();
+            .Where(i => !dragged.Contains(i.StableId) && current.TryGetValue(i.StableId, out var item) && Visible(item))
+            .Select(i => new DesktopIconTarget(i.StableId,
+                previous.TryGetValue(i.StableId, out var old) && !Visible(old) ? old.Position : canonical[i.StableId])).ToArray();
     }
 
     public static bool AtTargets(DesktopIconSnapshot snapshot, IReadOnlyList<DesktopIconTarget> targets) => snapshot.Connected && snapshot.CanPosition && snapshot.Error is null &&

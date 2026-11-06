@@ -59,6 +59,9 @@ dotnet test DesktopOrganizer.sln -c Release --no-build
 Wallpaper Engine удалён layered/color-key режим Explorer ListView; используется его
 штатная прозрачность и native input. Проверки и ограничения:
 [Native wallpaper composition](docs/FIX-WALLPAPER-NATIVE-COMPOSITION.md).
+Возврат вытолкнутых Explorer значков в parking сделан устойчивым (без «застывания»),
+реакция на drop ускорена; idle-опрос Explorer снижен с 250 ms до 2 s:
+[Post-drop flash](docs/FIX-DROP-FLASH-REDRAW-HOLD.md). Физическая проверка ожидается.
 
 ## Запуск
 

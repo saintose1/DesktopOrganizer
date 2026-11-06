@@ -57,10 +57,21 @@ public sealed class ExplorerParkingDropTests
     }
 
     [Fact]
-    public void AnIconPreviouslyVisibleOnNegativeCoordinateMonitorIsNotTreatedAsParked()
+    public void AStrandedCollapsedItemVisibleBeforeTheGestureReturnsToItsCanonicalParkingSlot()
     {
-        Assert.Empty(IconPlacement.DisplacedParking([Group(true, "A")], [Icon("A", -1500, 200)],
+        // An interrupted earlier repair left the item on the negative-coordinate monitor; it must not stay there.
+        var group = Group(true, "A");
+        var target = Assert.Single(IconPlacement.DisplacedParking([group], [Icon("A", -1500, 200)],
             Snapshot(Icon("A", 500, 200)), [], Monitors));
+        Assert.Equal(IconPlacement.Parking(Monitors, 0, IconGridMetrics.Default), target.Position);
+    }
+
+    [Fact]
+    public void StrandedItemsAreRecoveredEvenWithoutAPreGestureSnapshot()
+    {
+        var targets = IconPlacement.DisplacedParking([Group(true, "A", "B"), Group(false, "C")], [],
+            Snapshot(Icon("A", 100, 100), Icon("B", -8192, -4096), Icon("C", 300, 300)), [], Monitors);
+        Assert.Equal("A", Assert.Single(targets).StableId);
     }
 
     [Fact]

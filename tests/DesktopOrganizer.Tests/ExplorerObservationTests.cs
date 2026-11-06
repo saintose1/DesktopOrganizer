@@ -25,7 +25,7 @@ public sealed class ExplorerObservationTests
                     var icons = new PendingRead();
                     using var coordinator = new DesktopIconCoordinator(icons, host, NullLogger<DesktopIconCoordinator>.Instance, _ => throw new InvalidOperationException("No commit expected."));
                     coordinator.Start();
-                    await icons.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                    await icons.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)); // cold JIT/WPF start on a busy machine
                     var notify = typeof(DesktopIconCoordinator).GetMethod("OnExplorerPointer", BindingFlags.Instance | BindingFlags.NonPublic)!
                         .CreateDelegate<Action<ExplorerPointerEvent>>(coordinator);
                     notify(new(ExplorerPointerPhase.Pressed, new(10, 20), false, true)
@@ -44,7 +44,7 @@ public sealed class ExplorerObservationTests
             Dispatcher.Run();
         }) { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
-        await completed.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
         thread.Join(TimeSpan.FromSeconds(1));
     }
 

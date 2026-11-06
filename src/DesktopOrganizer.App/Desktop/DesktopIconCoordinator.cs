@@ -19,7 +19,7 @@ public sealed class DesktopIconCoordinator : IDisposable
     private readonly IconLayoutTransaction _transaction;
     private readonly Win32DesktopHost _host;
     private readonly ILogger<DesktopIconCoordinator> _logger;
-    private readonly DispatcherTimer _timer, _releaseTimer;
+    private readonly DispatcherTimer _timer, _releaseTimer, _followUp;
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Func<IReadOnlyList<Fence>, bool> _commit;
@@ -55,7 +55,11 @@ public sealed class DesktopIconCoordinator : IDisposable
         Func<IReadOnlyList<Fence>, bool> commit, IIconRecoveryStore? recoveryStore = null)
     {
         _icons = icons; _transaction = new(icons); _host = host; _logger = logger; _commit = commit; _recoveryStore = recoveryStore;
-        _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
+        // Explorer item WinEvents, Shell change notifications and raw input drive observation.
+        // A full inventory read costs hundreds of cross-process calls, so the idle poll is only a safety net.
+        _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
+        _followUp = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
+        _followUp.Tick += (_, _) => { _followUp.Stop(); RequestObservation(); };
         _releaseTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(16) };
         _timer.Tick += OnTick; _releaseTimer.Tick += OnReleaseTick;
         _host.IconPositionsChanged += OnExplorerChanged;
@@ -121,7 +125,10 @@ public sealed class DesktopIconCoordinator : IDisposable
     {
         if (_disposed || _moving || _applyingDrop || InteractionActive || _host.HasActiveInteraction) return;
         if (ExplorerBusy()) { _releaseTimer.Start(); return; }
-        RequestObservation();
+        // Explorer's capture end follows its native drop (and its reflow of parked items):
+        // re-park immediately instead of waiting for the next release timer tick.
+        RequestObservation(_explorerGesture.Phase == ExplorerGesturePhase.PostDropReconciliation
+            ? DispatcherPriority.Input : DispatcherPriority.Background);
     }
     private void OnIconRenamed(string before, string after)
     {
@@ -162,12 +169,19 @@ public sealed class DesktopIconCoordinator : IDisposable
             if (_selectionRead is not null) await _selectionRead;
             if (Busy() || _explorerGesture.Sequence != sequence) { RequestObservation(DispatcherPriority.Input); return; }
             _host.FinishNativeSelection();
-            // Shell refresh can reset the ListView background before item enumeration becomes consistent.
-            _host.ReconcileExplorerPresentation();
             if (_initialized && _positioningAvailable && Enabled && _host.PresentationConnected &&
                 _explorerGesture.Drop is { DesktopTarget: true } drop &&
                 (DropAffectsFence(drop) || _fences.Any(f => f.IsCollapsed && !f.Icons.IsEmpty)))
-            { await ReconcileDropAsync(drop); return; }
+            {
+                // Explorer's reflow of parked items is on screen right now: no extra cross-process
+                // presentation checks before the re-park batch (the next observation performs them).
+                _host.Trace.Mark("Drop.tick");
+                try { await ReconcileDropAsync(drop); }
+                catch (Exception) when (!_disposed) { _retryDropRepair = true; throw; }
+                return;
+            }
+            // Shell refresh can reset the ListView background before item enumeration becomes consistent.
+            _host.ReconcileExplorerPresentation();
             _observationRead = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
             var snapshot = await _icons.ReadAsync(_observationRead.Token);
             // An idle read started before a complete fast drag must not consume that newer drop.
@@ -176,7 +190,8 @@ public sealed class DesktopIconCoordinator : IDisposable
                 (snapshot.Error is null ? snapshot.Notice is null ? "" : " · " + snapshot.Notice : " · " + snapshot.Error));
             if (!snapshot.Connected) { _previousMissing.Clear(); _initialized = false; _positioningAvailable = false; return; }
             // Retain the last complete snapshot and readiness through transient Explorer enumeration failures.
-            if (snapshot.Error is not null) { _previousMissing.Clear(); return; }
+            // Shell membership changes often make one enumeration inconsistent; retry soon, not at the safety poll.
+            if (snapshot.Error is not null) { _previousMissing.Clear(); _followUp.Start(); return; }
             _host.ReconcileExplorerPresentation();
             Metrics = snapshot.Metrics; _host.IconMetrics = Metrics;
             _matched = FenceIconLayout.Match(snapshot.Icons);
@@ -191,6 +206,7 @@ public sealed class DesktopIconCoordinator : IDisposable
             _positioningAvailable = available;
             // Polling observes Explorer, but must never infer a partial drop from individual bounds.
             ApplySnapshot(snapshot); CompleteGesture();
+            if (available) await ReparkStrandedAsync(snapshot);
             if (available) await ReconcileMembershipAsync(snapshot);
         }
         catch (OperationCanceledException) { }
@@ -206,9 +222,34 @@ public sealed class DesktopIconCoordinator : IDisposable
             _observationRead?.Dispose(); _observationRead = null;
             _reading = false;
             if (_pending is not null && !_moving && !_disposed) MoveLatest();
+            else if (_retryDropRepair)
+            {
+                // A failed drop repair leaves Explorer's reflowed items visible; re-observe now (the ordinary
+                // path re-parks stranded items) rather than at the slow safety poll.
+                _retryDropRepair = false; RequestObservation(DispatcherPriority.Input);
+            }
             else if (_requested) RequestObservation(_explorerGesture.Phase == ExplorerGesturePhase.PostDropReconciliation
                 ? DispatcherPriority.Input : DispatcherPriority.Background);
         }
+    }
+    private bool _retryDropRepair;
+    /// <summary>
+    /// Explorer clamps every item into its work area on native drops and other layout changes; there is no
+    /// offscreen position it leaves alone. Any item of a collapsed group observed on a monitor is parked again
+    /// (one bulk, assignments unchanged), so an interrupted or late reflow can never leave items stranded.
+    /// </summary>
+    private async Task ReparkStrandedAsync(DesktopIconSnapshot snapshot)
+    {
+        if (Busy() || _monitors.Count == 0) return;
+        var stranded = IconPlacement.DisplacedParking(_fences, [], snapshot, [], _monitors);
+        if (stranded.Count == 0) return;
+        _applyingDrop = true;
+        try
+        {
+            ApplySnapshot(await _transaction.PositionVerifiedAsync(stranded, _shutdown.Token, drop: true));
+            _logger.LogInformation("Re-parked {Count} collapsed-group items Explorer had placed on the desktop", stranded.Count);
+        }
+        finally { _applyingDrop = false; }
     }
     private bool DropAffectsFence(ExplorerDrop drop) => FenceIconLayout.DropTarget(_fences, drop.Point, _host.GetScale) is not null ||
         _fences.SelectMany(f => f.Icons).Any(i => drop.DraggedIds.Contains(i.StableId, FenceIconLayout.IdentityComparer));
@@ -221,6 +262,7 @@ public sealed class DesktopIconCoordinator : IDisposable
         IReadOnlyList<Fence> changed = source;
         IReadOnlyList<DesktopIconTarget> targets = [], recovery = [];
         var restoredParking = 0;
+        var parked = new HashSet<string>(FenceIconLayout.IdentityComparer);
         var beforeCounters = (_icons as IDesktopPositionDiagnostics)?.PositionCounters ?? default;
         var beforePaints = _host.RepaintCount;
         _applyingDrop = true;
@@ -236,6 +278,7 @@ public sealed class DesktopIconCoordinator : IDisposable
                     var layout = IconPlacement.ChangedFenceTargets(source, changed, monitors, snapshot.Metrics);
                     var parking = IconPlacement.DisplacedParking(changed, before, snapshot, drop.DraggedIds, monitors);
                     restoredParking = parking.Count;
+                    foreach (var item in parking) parked.Add(item.StableId);
                     targets = FenceIconLayout.ChangedTargets(layout.Concat(parking)
                         .DistinctBy(t => t.StableId, FenceIconLayout.IdentityComparer).ToArray(), snapshot.Icons);
                     _host.Trace.Mark("Assignment/layout.proposal", drop.DraggedIds.Count);
@@ -245,13 +288,21 @@ public sealed class DesktopIconCoordinator : IDisposable
                 {
                     // Shell redraw has completed before any durable work or model feedback.
                     await Dispatcher.Yield(DispatcherPriority.Background);
+                    // An ordinary drop only re-parked displaced items: nothing durable to commit, so a quick
+                    // follow-up press must not reject it and roll the parked items back onto the desktop.
+                    if (_revision == revision && SameState(source, changed) && SameState(_fences, changed))
+                    {
+                        Metrics = verified.Metrics; _host.IconMetrics = Metrics;
+                        recovery = IconPlacement.ReturnPositions(changed); // unchanged journal content
+                        return true;
+                    }
                     if (Busy() || _explorerGesture.Sequence != sequence || _revision != revision) return false;
                     Metrics = verified.Metrics; _host.IconMetrics = Metrics;
                     recovery = IconPlacement.ReturnPositions(changed); PrepareRecovery(recovery);
                     _host.Trace.Mark("Persistence.begin");
                     var accepted = SameState(_fences, changed) || _commit(changed);
                     _host.Trace.Mark("Persistence.end"); return accepted;
-                }, _shutdown.Token);
+                }, _shutdown.Token, parked.Contains);
             ApplySnapshot(positioned); CompleteRecovery(recovery);
             var counters = (_icons as IDesktopPositionDiagnostics)?.PositionCounters ?? default;
             var target = FenceIconLayout.DropTarget(changed, drop.Point, f => scales[f.Id]);
@@ -278,6 +329,8 @@ public sealed class DesktopIconCoordinator : IDisposable
                 .ToHashSet(FenceIconLayout.IdentityComparer), _shutdown.Token);
         if (Busy()) return;
         _previousMissing = missing;
+        // A removal needs a second complete read; do not wait for the slow safety poll.
+        if (missing.Count > confirmed.Count) _followUp.Start();
         if (confirmed.Count == 0 && _renames.Count == 0) return;
         var source = _fences.ToArray(); var revision = _revision; var sequence = _explorerGesture.Sequence;
         var scales = source.ToDictionary(f => f.Id, _host.GetScale);
@@ -620,6 +673,7 @@ public sealed class DesktopIconCoordinator : IDisposable
         _host.IconRemoved -= OnIconRemoved;
         _host.ExplorerPointer -= OnExplorerPointer;
         _timer.Stop(); _timer.Tick -= OnTick; _releaseTimer.Stop(); _releaseTimer.Tick -= OnReleaseTick;
+        _followUp.Stop();
         _shutdown.Cancel(); _pending?.Completion?.TrySetCanceled(); _pending?.Dispose(); _pending = null;
         _shutdown.Dispose();
         _idle?.TrySetCanceled();
