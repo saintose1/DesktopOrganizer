@@ -1,0 +1,33 @@
+name: Bug report / Сообщить об ошибке
+description: Something on the desktop does not work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If desktop icons stay hidden after a crash, run `DesktopOrganizer.App.exe --RestoreHidden=true` first.
+        Если значки остались скрытыми после сбоя, сначала запустите `DesktopOrganizer.App.exe --RestoreHidden=true`.
+  - type: input
+    id: version
+    attributes:
+      label: Version / Версия
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version, monitors and scaling / Версия Windows, мониторы, масштаб
+      placeholder: "Windows 11 24H2, 1 monitor 2560x1600 at 150%"
+  - type: textarea
+    id: steps
+    attributes:
+      label: What happened and how to reproduce / Что произошло и как повторить
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt / Фрагмент лога
+      description: "%LOCALAPPDATA%\\DesktopOrganizer\\Logs — paste the lines around the problem. Check them for anything private before posting."
+      render: text
