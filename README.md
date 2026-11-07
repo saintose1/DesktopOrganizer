@@ -7,6 +7,7 @@
 desktop icons into translucent panels that collapse, expand on hover, snap to screen edges and to each
 other, and automatically collect new files by name rules (`*.png; *.lnk; Steam*`). Icons stay real
 Explorer items — clicks, double-clicks, drag and drop work natively; no DLL injection, no overlay.
+The interface is available in English and Russian (Settings → Language).
 
 - **Install:** download `DesktopOrganizer-<version>-setup.exe` (per-user, no admin rights) or the portable
   zip from [Releases](https://github.com/saintose1/DesktopOrganizer/releases). No .NET runtime required.
@@ -44,6 +45,7 @@ Windows-приложение для организации настоящих з
   Аварийное восстановление без запуска программы: `DesktopOrganizer.App.exe --RestoreHidden=true`.
 - Окно настроек создаётся только при открытии и освобождается при закрытии в трей (меньше памяти).
 - Установщик без прав администратора и portable zip собираются `scripts/publish.ps1` и GitHub Actions.
+- Язык интерфейса: русский или английский (Настройки → Язык), по умолчанию — язык Windows.
 - JSON persistence, безопасная запись, обработка повреждённых данных,
   логирование и восстановление подключения после потери Explorer.
 

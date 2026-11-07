@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Windows;
 using System.IO;
 using System.Security.Cryptography;
@@ -38,6 +39,9 @@ public partial class App : Application
             builder.Logging.ClearProviders();
             var dataDirectory = Path.GetFullPath(builder.Configuration["StorageDirectory"] ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DesktopOrganizer"));
+            // Interface language first, so even the earliest message boxes use it.
+            try { Texts.SetLanguage(new JsonAppPreferences(dataDirectory, Microsoft.Extensions.Logging.Abstractions.NullLogger<JsonAppPreferences>.Instance).Load().Language); }
+            catch (Exception) { Texts.SetLanguage(null); } // unreadable settings: follow Windows; Settings reports the error
             var storageKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(dataDirectory.ToUpperInvariant())));
             _instanceMutex = new Mutex(true, $"Local\\DesktopOrganizer-{storageKey}", out _ownsMutex);
             var restoreHidden = bool.TryParse(builder.Configuration["RestoreHidden"], out var restore) && restore;
@@ -45,8 +49,8 @@ public partial class App : Application
             if (!_ownsMutex)
             {
                 if (!quiet) MessageBox.Show(restoreHidden
-                    ? "Сначала закройте DesktopOrganizer через трей → «Выход»: он сам вернёт скрытые ярлыки."
-                    : "DesktopOrganizer уже запущен для этой папки данных.", "DesktopOrganizer");
+                    ? Texts.T("Сначала закройте DesktopOrganizer через трей → «Выход»: он сам вернёт скрытые ярлыки.")
+                    : Texts.T("DesktopOrganizer уже запущен для этой папки данных."), "DesktopOrganizer");
                 Shutdown(restoreHidden ? 2 : 0);
                 return;
             }
@@ -55,8 +59,8 @@ public partial class App : Application
                 // Recovery without Explorer automation: un-hide every journaled item and exit (used by the uninstaller).
                 var result = HiddenItemsRecovery.RestoreAll(dataDirectory);
                 if (!quiet) MessageBox.Show(result.Failed.Count == 0
-                    ? $"Скрытые ярлыки возвращены: {result.Restored}. Отсутствуют на диске: {result.Missing}."
-                    : $"Возвращено: {result.Restored}. Не удалось вернуть {result.Failed.Count}:\n{string.Join("\n", result.Failed.Take(10))}",
+                    ? Texts.F("Скрытые ярлыки возвращены: {0}. Отсутствуют на диске: {1}.", result.Restored, result.Missing)
+                    : Texts.F("Возвращено: {0}. Не удалось вернуть {1}:\n{2}", result.Restored, result.Failed.Count, string.Join("\n", result.Failed.Take(10))),
                     "DesktopOrganizer");
                 Shutdown(result.Failed.Count == 0 ? 0 : 1);
                 return;
@@ -89,7 +93,7 @@ public partial class App : Application
         {
             _logger?.LogCritical(exception, "DesktopOrganizer failed to start");
             MessageBox.Show(
-                $"Не удалось запустить DesktopOrganizer.\n{exception.Message}",
+                Texts.F("Не удалось запустить DesktopOrganizer.\n{0}", exception.Message),
                 "DesktopOrganizer",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);

@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using DesktopOrganizer.Core.Desktop;
@@ -422,10 +423,10 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
                 var autoArrange = _shell.View.GetAutoArrange();
                 Marshal.ThrowExceptionForHR(autoArrange);
                 var canPosition = autoArrange == 1; // S_FALSE: auto-arrange is off.
-                var error = !canPosition ? "Отключите «Упорядочить значки автоматически» на рабочем столе для группировки иконок." :
-                    failed > 0 ? $"Не удалось прочитать {failed} из {count} иконок: {firstFailure}" : null;
+                var error = !canPosition ? Texts.T("Отключите «Упорядочить значки автоматически» на рабочем столе для группировки иконок.") :
+                    failed > 0 ? Texts.F("Не удалось прочитать {0} из {1} иконок: {2}", failed, count, firstFailure) : null;
                 var snapshot = new DesktopIconSnapshot(true, canPosition, icons, new IconGridMetrics(stepX, stepY, itemWidth, itemHeight, offsetX, offsetY).Validated(), error,
-                    _restoreGrid ? "Сетка Explorer временно отключена; восстановится при закрытии приложения." : null);
+                    _restoreGrid ? Texts.T("Сетка Explorer временно отключена; восстановится при закрытии приложения.") : null);
                 if (error is null) { _completeSnapshot = snapshot; _completeDpi = NativeMethods.GetDpiForWindow(Handles.IconList); }
                 return snapshot;
             }

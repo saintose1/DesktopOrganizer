@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Globalization;
 using DesktopOrganizer.Core.Models;
 
@@ -18,7 +19,7 @@ public sealed class ColorPickerViewModel : ObservableObject
         {
             if (!SetProperty(ref _hex, value)) return;
             try { LoadColor(FenceAppearance.NormalizeColor(value)); ColorChanged?.Invoke(Color); }
-            catch (ArgumentException) { _error = "Используйте #RRGGBB"; OnPropertyChanged(nameof(Error)); }
+            catch (ArgumentException) { _error = Texts.T("Используйте #RRGGBB"); OnPropertyChanged(nameof(Error)); }
         }
     }
     public double Hue

@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Globalization;
 
 namespace DesktopOrganizer.Core.Models;
@@ -28,10 +29,10 @@ public sealed record FenceAppearance
         string borderColor = "#BED2EB", double borderOpacity = 100)
     {
         if (string.IsNullOrWhiteSpace(fontFamily) || fontFamily.Length > 100 || fontFamily.Any(char.IsControl))
-            throw new ArgumentException("Шрифт: укажите название от 1 до 100 символов.");
+            throw new ArgumentException(Texts.T("Шрифт: укажите название от 1 до 100 символов."));
         if (!double.IsFinite(fontSize) || fontSize is < 8 or > 28)
-            throw new ArgumentException("Размер шрифта: от 8 до 28. Высота заголовка фиксирована.");
-        if (!Enum.IsDefined(alignment)) throw new ArgumentException("Неизвестное выравнивание текста.");
+            throw new ArgumentException(Texts.T("Размер шрифта: от 8 до 28. Высота заголовка фиксирована."));
+        if (!Enum.IsDefined(alignment)) throw new ArgumentException(Texts.T("Неизвестное выравнивание текста."));
         FontFamily = fontFamily.Trim(); FontSize = fontSize; Bold = bold; Italic = italic; Alignment = alignment;
         TextColor = NormalizeColor(textColor); HeaderColor = NormalizeColor(headerColor);
         BodyColor = NormalizeColor(bodyColor); BorderColor = NormalizeColor(borderColor);
@@ -42,9 +43,9 @@ public sealed record FenceAppearance
     {
         if (color is null || color.Length != 7 || color[0] != '#' || color.AsSpan(1).ContainsAnyExcept("0123456789abcdefABCDEF") ||
             !uint.TryParse(color.AsSpan(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _))
-            throw new ArgumentException("Цвет: введите HEX в формате #RRGGBB.");
+            throw new ArgumentException(Texts.T("Цвет: введите HEX в формате #RRGGBB."));
         return color.ToUpperInvariant();
     }
     private static double ValidateOpacity(double value) => double.IsFinite(value) && value is >= 0 and <= 100
-        ? value : throw new ArgumentException("Непрозрачность должна быть от 0 до 100%.");
+        ? value : throw new ArgumentException(Texts.T("Непрозрачность должна быть от 0 до 100%."));
 }

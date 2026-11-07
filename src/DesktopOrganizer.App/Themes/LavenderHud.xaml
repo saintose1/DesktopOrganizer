@@ -125,6 +125,12 @@
             </Setter.Value>
         </Setter>
     </Style>
+    <Style TargetType="RadioButton">
+        <Setter Property="Foreground" Value="{StaticResource Text}" />
+        <Setter Property="FontSize" Value="15" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Cursor" Value="Hand" />
+    </Style>
     <Style x:Key="StartupToggle" TargetType="CheckBox">
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">

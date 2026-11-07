@@ -32,7 +32,7 @@ public static class DesktopDiagnostics
             if (NativeMethods.ProcessOf(window) != processId) return true;
             if (NativeMethods.ClassOf(window).StartsWith("DesktopOrganizer.Tray.", StringComparison.Ordinal)) owner = window;
             var caption = new StringBuilder(256); NativeMethods.GetWindowText(window, caption, caption.Capacity);
-            if (caption.ToString() == "DesktopOrganizer — группы") main = window;
+            if (caption.ToString().StartsWith("DesktopOrganizer —", StringComparison.Ordinal)) main = window;
             return true;
         };
         NativeMethods.EnumWindows(callback, 0);

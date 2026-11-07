@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Buffers;
 using System.Collections;
 using System.Diagnostics;
@@ -480,7 +481,7 @@ public sealed partial class DesktopIconCoordinator : IDisposable
         while (_reading || _moving || _pending is not null || _scheduled || ExplorerBusy())
         {
             if (Stopwatch.GetElapsedTime(started) > TimeSpan.FromSeconds(10))
-                throw new InvalidOperationException("Дождитесь завершения перемещения значков и повторите выход.");
+                throw new InvalidOperationException(Texts.T("Дождитесь завершения перемещения значков и повторите выход."));
             await Task.Delay(20);
         }
         _stopping = true; _timer.Stop(); _releaseTimer.Stop();

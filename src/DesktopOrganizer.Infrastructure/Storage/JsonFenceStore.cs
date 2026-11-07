@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Text.Json;
 using DesktopOrganizer.Core.Models;
 using DesktopOrganizer.Core.Storage;
@@ -17,14 +18,14 @@ public sealed class JsonFenceStore(string dataDirectory, ILogger<JsonFenceStore>
             // Open directly: File.Exists would hide permission and I/O failures.
             using var stream = File.OpenRead(FilePath);
             var documents = JsonSerializer.Deserialize<List<FenceDocument>>(stream, JsonOptions)
-                ?? throw new JsonException("Ожидался массив групп.");
+                ?? throw new JsonException(Texts.T("Ожидался массив групп."));
             var fences = documents.Select(document =>
-                (document ?? throw new JsonException("Группа не может быть null.")).ToFence()).ToArray();
+                (document ?? throw new JsonException(Texts.T("Группа не может быть null."))).ToFence()).ToArray();
             if (fences.Select(fence => fence.Id).Distinct().Count() != fences.Length)
-                throw new JsonException("Идентификаторы групп должны быть уникальными.");
+                throw new JsonException(Texts.T("Идентификаторы групп должны быть уникальными."));
             var identities = fences.SelectMany(f => f.Icons).Select(i => i.StableId).ToArray();
             if (identities.Distinct(StringComparer.OrdinalIgnoreCase).Count() != identities.Length)
-                throw new JsonException("Иконка не может принадлежать нескольким группам.");
+                throw new JsonException(Texts.T("Иконка не может принадлежать нескольким группам."));
             logger.LogInformation("Loaded {Count} groups", fences.Length);
             return new FenceLoadResult(fences);
         }
@@ -38,7 +39,7 @@ public sealed class JsonFenceStore(string dataDirectory, ILogger<JsonFenceStore>
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             logger.LogError(exception, "Could not read groups from {FilePath}", FilePath);
-            return new FenceLoadResult([], "Не удалось прочитать группы. Изменения заблокированы, чтобы сохранить исходный файл. Проверьте доступ и перезапустите приложение.", false);
+            return new FenceLoadResult([], Texts.T("Не удалось прочитать группы. Изменения заблокированы, чтобы сохранить исходный файл. Проверьте доступ и перезапустите приложение."), false);
         }
     }
 
@@ -46,10 +47,10 @@ public sealed class JsonFenceStore(string dataDirectory, ILogger<JsonFenceStore>
     {
         ArgumentNullException.ThrowIfNull(fences);
         if (fences.Any(fence => fence is null) || fences.Select(fence => fence.Id).Distinct().Count() != fences.Count)
-            throw new ArgumentException("Группы должны иметь уникальные идентификаторы.", nameof(fences));
+            throw new ArgumentException(Texts.T("Группы должны иметь уникальные идентификаторы."), nameof(fences));
         var identities = fences.SelectMany(f => f.Icons).Select(i => i.StableId).ToArray();
         if (identities.Distinct(StringComparer.OrdinalIgnoreCase).Count() != identities.Length)
-            throw new ArgumentException("Иконка не может принадлежать нескольким группам.", nameof(fences));
+            throw new ArgumentException(Texts.T("Иконка не может принадлежать нескольким группам."), nameof(fences));
         var temporaryPath = FilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
@@ -68,7 +69,7 @@ public sealed class JsonFenceStore(string dataDirectory, ILogger<JsonFenceStore>
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
             logger.LogError(exception, "Could not save groups to {FilePath}", FilePath);
-            throw new FenceStorageException("Не удалось сохранить изменения. Предыдущее состояние сохранено. Проверьте доступ к папке и свободное место, затем повторите действие.", exception);
+            throw new FenceStorageException(Texts.T("Не удалось сохранить изменения. Предыдущее состояние сохранено. Проверьте доступ к папке и свободное место, затем повторите действие."), exception);
         }
         finally
         {
@@ -87,12 +88,12 @@ public sealed class JsonFenceStore(string dataDirectory, ILogger<JsonFenceStore>
         {
             File.Move(FilePath, backupPath);
             logger.LogWarning("Corrupt group file preserved at {BackupPath}", backupPath);
-            return new FenceLoadResult([], $"Файл групп повреждён. Исходный файл сохранён: {backupPath}. Можно создавать новые группы.");
+            return new FenceLoadResult([], Texts.F("Файл групп повреждён. Исходный файл сохранён: {0}. Можно создавать новые группы.", backupPath));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             logger.LogError(exception, "Could not preserve corrupt group file");
-            return new FenceLoadResult([], "Файл групп повреждён, и его резервную копию создать не удалось. Изменения заблокированы. Проверьте доступ и перезапустите приложение.", false);
+            return new FenceLoadResult([], Texts.T("Файл групп повреждён, и его резервную копию создать не удалось. Изменения заблокированы. Проверьте доступ и перезапустите приложение."), false);
         }
     }
 

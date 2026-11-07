@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using DesktopOrganizer.App.Commands;
 using DesktopOrganizer.Infrastructure.Settings;
 using Microsoft.Extensions.Logging;
@@ -17,7 +18,7 @@ public sealed class SettingsViewModel : ObservableObject
         set
         {
             if (value == AutoExpandOnHover) return;
-            try { SavePreferences(new(value, ExpandAnimationSeconds, CollapseAnimationSeconds)); }
+            try { SavePreferences(new(value, ExpandAnimationSeconds, CollapseAnimationSeconds, _currentPreferences.Language)); }
             catch (Exception error) { ReportPreferences(error); }
             OnPropertyChanged();
         }
@@ -28,7 +29,7 @@ public sealed class SettingsViewModel : ObservableObject
         set
         {
             if (value == ExpandAnimationSeconds) return;
-            try { SavePreferences(new(AutoExpandOnHover, value, CollapseAnimationSeconds)); }
+            try { SavePreferences(new(AutoExpandOnHover, value, CollapseAnimationSeconds, _currentPreferences.Language)); }
             catch (Exception error) { ReportPreferences(error); }
             OnPropertyChanged();
         }
@@ -39,10 +40,20 @@ public sealed class SettingsViewModel : ObservableObject
         set
         {
             if (value == CollapseAnimationSeconds) return;
-            try { SavePreferences(new(AutoExpandOnHover, ExpandAnimationSeconds, value)); }
+            try { SavePreferences(new(AutoExpandOnHover, ExpandAnimationSeconds, value, _currentPreferences.Language)); }
             catch (Exception error) { ReportPreferences(error); }
             OnPropertyChanged();
         }
+    }
+    public bool IsRussian { get => Texts.Language == Texts.Russian; set { if (value) SetLanguage(Texts.Russian); } }
+    public bool IsEnglish { get => Texts.Language == Texts.English; set { if (value) SetLanguage(Texts.English); } }
+    private void SetLanguage(string language)
+    {
+        if (Texts.Language == language && _currentPreferences.Language == language) return;
+        try { SavePreferences(new(AutoExpandOnHover, ExpandAnimationSeconds, CollapseAnimationSeconds, language)); }
+        catch (Exception error) { ReportPreferences(error); }
+        Texts.SetLanguage(language); // the window, tray menu and new messages switch at once
+        OnPropertyChanged(nameof(IsRussian)); OnPropertyChanged(nameof(IsEnglish));
     }
     private void SavePreferences(AppPreferences preferences)
     {
@@ -84,11 +95,11 @@ public sealed class SettingsViewModel : ObservableObject
     private void ReportPreferences(Exception error)
     {
         _logger.LogError(error, "Could not read or update application preferences");
-        Error = "Не удалось прочитать или сохранить настройки. " + error.Message;
+        Error = Texts.T("Не удалось прочитать или сохранить настройки. ") + error.Message;
     }
     private void Report(Exception error)
     {
         _logger.LogError(error, "Could not read or update current-user autostart");
-        Error = "Не удалось изменить или прочитать автозапуск. " + error.Message;
+        Error = Texts.T("Не удалось изменить или прочитать автозапуск. ") + error.Message;
     }
 }

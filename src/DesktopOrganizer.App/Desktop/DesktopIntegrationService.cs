@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Threading;
@@ -518,7 +519,7 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
             while (_gestureOriginal is not null || _finishing || IsPresentingTransition)
             {
                 if (Stopwatch.GetElapsedTime(started) > TimeSpan.FromSeconds(10))
-                    throw new InvalidOperationException("Дождитесь завершения изменения Fence и повторите выход.");
+                    throw new InvalidOperationException(Texts.T("Дождитесь завершения изменения Fence и повторите выход."));
                 await Task.Delay(20);
             }
             // ViewModel has already persisted every completed gesture and accepted command.

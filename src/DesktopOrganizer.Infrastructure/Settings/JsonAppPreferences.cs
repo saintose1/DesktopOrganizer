@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -9,17 +10,21 @@ public sealed record AppPreferences
     public bool AutoExpandOnHover { get; }
     public double ExpandAnimationSeconds { get; }
     public double CollapseAnimationSeconds { get; }
-    public AppPreferences(bool autoExpandOnHover = false, double expandAnimationSeconds = 0.18, double collapseAnimationSeconds = 0.14)
+    /// <summary>"ru", "en", or null to follow the Windows display language (files from older versions).</summary>
+    public string? Language { get; }
+    public AppPreferences(bool autoExpandOnHover = false, double expandAnimationSeconds = 0.18, double collapseAnimationSeconds = 0.14,
+        string? language = null)
     {
         ValidateSeconds(expandAnimationSeconds); ValidateSeconds(collapseAnimationSeconds);
         AutoExpandOnHover = autoExpandOnHover;
         ExpandAnimationSeconds = expandAnimationSeconds;
         CollapseAnimationSeconds = collapseAnimationSeconds;
+        Language = language is Texts.Russian or Texts.English ? language : null;
     }
     private static void ValidateSeconds(double seconds)
     {
         if (!double.IsFinite(seconds) || seconds < 0 || seconds > MaximumAnimationSeconds)
-            throw new ArgumentException("Длительность должна быть от 0 до 3 секунд.");
+            throw new ArgumentException(Texts.T("Длительность должна быть от 0 до 3 секунд."));
     }
 }
 
@@ -53,7 +58,7 @@ public sealed class JsonAppPreferences(string directory, ILogger<JsonAppPreferen
     }
     public void Save(AppPreferences preferences)
     {
-        if (_readFailed) throw new IOException("Настройки недоступны или повреждены. Исходный settings.json сохранён; исправьте файл и откройте настройки снова.");
+        if (_readFailed) throw new IOException(Texts.T("Настройки недоступны или повреждены. Исходный settings.json сохранён; исправьте файл и откройте настройки снова."));
         var temporary = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {

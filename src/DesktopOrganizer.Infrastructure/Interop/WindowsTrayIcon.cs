@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
@@ -28,7 +29,7 @@ public sealed class WindowsTrayIcon(ILogger<WindowsTrayIcon> logger, string? ico
         if (iconPath is not null)
         {
             _icon = TrayNative.LoadImage(0, Path.GetFullPath(iconPath), 1, NativeMethods.GetSystemMetrics(49), NativeMethods.GetSystemMetrics(50), 0x10);
-            if (_icon == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "Не удалось загрузить иконку трея.");
+            if (_icon == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), Texts.T("Не удалось загрузить иконку трея."));
             _ownsIcon = true;
         }
         else _icon = TrayNative.LoadIcon(0, (nint)32512);
@@ -59,11 +60,11 @@ public sealed class WindowsTrayIcon(ILogger<WindowsTrayIcon> logger, string? ico
     private void AddIcon()
     {
         var data = Data();
-        if (!TrayNative.ShellNotifyIcon(0, ref data)) throw new Win32Exception("Не удалось добавить значок DesktopOrganizer в трей.");
+        if (!TrayNative.ShellNotifyIcon(0, ref data)) throw new Win32Exception(Texts.T("Не удалось добавить значок DesktopOrganizer в трей."));
         if (!TrayNative.ShellNotifyIcon(4, ref data))
         {
             TrayNative.ShellNotifyIcon(2, ref data);
-            throw new Win32Exception("Не удалось настроить события значка DesktopOrganizer.");
+            throw new Win32Exception(Texts.T("Не удалось настроить события значка DesktopOrganizer."));
         }
         _logger.LogInformation("DesktopOrganizer tray icon registered");
     }
@@ -97,8 +98,8 @@ public sealed class WindowsTrayIcon(ILogger<WindowsTrayIcon> logger, string? ico
         uint selected;
         try
         {
-            if (!TrayNative.AppendMenu(menu, 0, 1, "Открыть DesktopOrganizer") ||
-                !TrayNative.AppendMenu(menu, 0, 2, "Выход")) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (!TrayNative.AppendMenu(menu, 0, 1, Texts.T("Открыть DesktopOrganizer")) ||
+                !TrayNative.AppendMenu(menu, 0, 2, Texts.T("Выход"))) throw new Win32Exception(Marshal.GetLastWin32Error());
             NativeMethods.GetCursorPos(out var point);
             NativeMethods.SetForegroundWindow(_window);
             selected = TrayNative.TrackPopupMenu(menu, 0x100 | 2, point.X, point.Y, 0, _window, 0);

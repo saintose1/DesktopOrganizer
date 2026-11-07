@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using DesktopOrganizer.App.Commands;
@@ -30,10 +31,10 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     public bool IsFencesPage => !IsSettingsPage;
     public RelayCommand OpenFencesCommand { get; }
     public RelayCommand OpenSettingsCommand { get; }
-    public string ConnectionLabel => _desktop?.Connection.Connected == true ? "Рабочий стол подключён" : "Подключение к рабочему столу…";
+    public string ConnectionLabel => _desktop?.Connection.Connected == true ? Texts.T("Рабочий стол подключён") : Texts.T("Подключение к рабочему столу…");
     public bool IsDesktopConnected => _desktop?.Connection.Connected == true;
 
-    public string Title => "DesktopOrganizer — группы";
+    public string Title => Texts.T("DesktopOrganizer — группы");
     public string DesktopStatus => $"Desktop integration: {(_desktop?.Connection.Connected == true ? "Connected" : "Disconnected")} · Surfaces: {_desktop?.Connection.SurfaceCount ?? 0}";
     public string IconStatus => _desktop?.Connection.IconStatus ?? "";
     public string DesktopDiagnostics => _desktop?.Connection.Diagnostics +
@@ -90,6 +91,11 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         _store = store;
         _logger = logger;
         _desktop = desktop;
+        Texts.LanguageChanged += () =>
+        {
+            OnPropertyChanged(nameof(Title)); OnPropertyChanged(nameof(ConnectionLabel)); OnPropertyChanged(nameof(IconStatus));
+            Status = ""; // earlier status lines were in the previous language
+        };
         AppearanceEditor = new FenceAppearanceViewModel(PreviewAppearance);
         _appearanceSaveTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(650) };
         _appearanceSaveTimer.Tick += OnAppearanceSaveTick;
@@ -122,7 +128,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         if (_desktop is not null) _desktop.Interaction += OnDesktopInteraction;
         if (_desktop is not null) _desktop.StateChangeRequested += OnDesktopStateChange;
         SelectedFence = _fences.FirstOrDefault();
-        Status = $"Загружено групп: {_fences.Count}. Изменения сохраняются автоматически.";
+        Status = Texts.F("Загружено групп: {0}. Изменения сохраняются автоматически.", _fences.Count);
         logger.LogInformation("Main window initialized with {Count} groups", _fences.Count);
     }
 
@@ -130,8 +136,8 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (!FlushAppearanceChanges()) return;
         var number = 1;
-        while (_fences.Any(fence => fence.Name == $"Группа {number}")) number++;
-        var fence = new Fence(Guid.NewGuid(), $"Группа {number}", 0, 0, 300, 200);
+        while (_fences.Any(fence => fence.Name == Texts.F("Группа {0}", number))) number++;
+        var fence = new Fence(Guid.NewGuid(), Texts.F("Группа {0}", number), 0, 0, 300, 200);
         if (!TrySave(_fences.Append(fence).ToArray())) return;
         _fences.Add(fence);
         SelectedFence = fence;
@@ -145,7 +151,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         try
         {
             replacement = new Fence(SelectedFence.Id, Name,
-                Parse(X, "X"), Parse(Y, "Y"), Parse(Width, "Ширина"), Parse(Height, "Высота"), SelectedFence.IsCollapsed, SelectedFence.Icons, SelectedFence.Appearance, SelectedFence.AutoSort);
+                Parse(X, "X"), Parse(Y, "Y"), Parse(Width, Texts.T("Ширина")), Parse(Height, Texts.T("Высота")), SelectedFence.IsCollapsed, SelectedFence.Icons, SelectedFence.Appearance, SelectedFence.AutoSort);
             replacement = _desktop?.NormalizeFence(SelectedFence, replacement) ?? replacement;
         }
         catch (ArgumentException exception) { Error = exception.Message; return; }
@@ -171,7 +177,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         _fences[index] = replacement;
         SelectedFence = replacement;
         _desktop?.SetFences(_fences.ToArray());
-        Status = replacement.AutoSort.IsEmpty ? "Авто-сортировка выключена." : "Новые подходящие файлы будут попадать в эту группу.";
+        Status = replacement.AutoSort.IsEmpty ? Texts.T("Авто-сортировка выключена.") : Texts.T("Новые подходящие файлы будут попадать в эту группу.");
     }
 
     private void Delete()
@@ -191,7 +197,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         {
             _store.Save(snapshot);
             Error = "";
-            Status = $"Сохранено групп: {snapshot.Count}. {DateTime.Now:T}";
+            Status = Texts.F("Сохранено групп: {0}. {1:T}", snapshot.Count, DateTime.Now);
             return true;
         }
         catch (FenceStorageException exception)
@@ -220,7 +226,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         {
             _updatingFromDesktop = true;
             try { ReplaceFence(args.Fence); } finally { _updatingFromDesktop = false; }
-            Status = "Изменение на рабочем столе. Сохранение после отпускания мыши.";
+            Status = Texts.T("Изменение на рабочем столе. Сохранение после отпускания мыши.");
             return;
         }
         var original = _interactionOriginal;
@@ -229,7 +235,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         if (args.Phase == InteractionPhase.Cancelled)
         {
             ReplaceFence(original);
-            Status = "Изменение отменено.";
+            Status = Texts.T("Изменение отменено.");
             FlushAppearanceChanges();
         }
         else if (current != original || _appearanceOriginal is not null)
@@ -320,7 +326,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         try { ReplaceFence(next); Name = next.Name; }
         finally { _updatingFromDesktop = false; }
         _desktop?.SetFences(_fences.ToArray());
-        Status = "Предпросмотр. Изменения сохраняются автоматически.";
+        Status = Texts.T("Предпросмотр. Изменения сохраняются автоматически.");
         _appearanceSaveTimer.Stop(); _appearanceSaveTimer.Start();
     }
     private void OnAppearanceSaveTick(object? sender, EventArgs args) => FlushAppearanceChanges();
@@ -348,7 +354,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (!(double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out var value) ||
               double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value)) || !double.IsFinite(value))
-            throw new ArgumentException($"{field}: введите конечное число.");
+            throw new ArgumentException(Texts.F("{0}: введите конечное число.", field));
         return value;
     }
 }

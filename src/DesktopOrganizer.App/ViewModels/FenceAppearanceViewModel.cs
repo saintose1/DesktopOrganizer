@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Globalization;
 using System.Windows.Media;
 using DesktopOrganizer.Core.Models;
@@ -60,7 +61,7 @@ public sealed class FenceAppearanceViewModel(Action<string, FenceAppearance> pre
         {
             if (!(double.TryParse(FontSize, NumberStyles.Float, CultureInfo.CurrentCulture, out var size) ||
                 double.TryParse(FontSize, NumberStyles.Float, CultureInfo.InvariantCulture, out size)))
-                throw new ArgumentException("Размер шрифта: введите число от 8 до 28.");
+                throw new ArgumentException(Texts.T("Размер шрифта: введите число от 8 до 28."));
             var appearance = new FenceAppearance(FontFamily, size, Bold, Italic, Alignment, TextColor,
                 HeaderColor, HeaderOpacity, BodyColor, BodyOpacity, BorderColor, BorderOpacity);
             preview(Name, appearance); Error = "";

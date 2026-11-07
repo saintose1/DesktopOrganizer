@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.Collections.Immutable;
 
 namespace DesktopOrganizer.Core.Models;
@@ -23,10 +24,10 @@ public sealed record Fence
         IEnumerable<DesktopIconAssignment>? icons = null, FenceAppearance? appearance = null, IEnumerable<string>? autoSort = null)
     {
         if (id == Guid.Empty)
-            throw new ArgumentException("Идентификатор группы не может быть пустым.", nameof(id));
+            throw new ArgumentException(Texts.T("Идентификатор группы не может быть пустым."), nameof(id));
         var trimmedName = name?.Trim();
         if (string.IsNullOrWhiteSpace(trimmedName) || trimmedName.Length > MaxNameLength || trimmedName.Any(char.IsControl))
-            throw new ArgumentException("Название должно содержать от 1 до 100 символов без управляющих символов.", nameof(name));
+            throw new ArgumentException(Texts.T("Название должно содержать от 1 до 100 символов без управляющих символов."), nameof(name));
         ValidateBounds(x, y, width, height);
         Id = id;
         Name = trimmedName;
@@ -53,21 +54,21 @@ public sealed record Fence
     private static ImmutableArray<string> ValidateAutoSort(IEnumerable<string> patterns)
     {
         var result = patterns.ToImmutableArray();
-        if (result.Length > Desktop.FenceAutoSort.MaxPatterns) throw new ArgumentException("Слишком много правил авто-сортировки.");
+        if (result.Length > Desktop.FenceAutoSort.MaxPatterns) throw new ArgumentException(Texts.T("Слишком много правил авто-сортировки."));
         foreach (var pattern in result) Desktop.FenceAutoSort.Validate(pattern);
         return result;
     }
     private static void ValidateBounds(double x, double y, double width, double height)
     {
-        if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentException("Координаты должны быть конечными числами.");
+        if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentException(Texts.T("Координаты должны быть конечными числами."));
         if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 0 || height <= 0)
-            throw new ArgumentException("Ширина и высота должны быть конечными числами больше нуля.");
+            throw new ArgumentException(Texts.T("Ширина и высота должны быть конечными числами больше нуля."));
     }
     private static ImmutableArray<DesktopIconAssignment> ValidateIcons(IEnumerable<DesktopIconAssignment> icons)
     {
         var result = icons.ToImmutableArray();
         if (result.Any(i => i is null) || result.Select(i => i.StableId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != result.Length)
-            throw new ArgumentException("Назначения иконок должны иметь уникальные идентификаторы.");
+            throw new ArgumentException(Texts.T("Назначения иконок должны иметь уникальные идентификаторы."));
         return result;
     }
 }

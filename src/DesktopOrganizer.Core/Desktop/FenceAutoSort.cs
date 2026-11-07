@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using DesktopOrganizer.Core.Models;
 
 namespace DesktopOrganizer.Core.Desktop;
@@ -21,7 +22,7 @@ public static class FenceAutoSort
             Validate(pattern);
             if (!result.Contains(pattern, StringComparer.OrdinalIgnoreCase)) result.Add(pattern);
         }
-        if (result.Count > MaxPatterns) throw new ArgumentException($"Не более {MaxPatterns} правил авто-сортировки.");
+        if (result.Count > MaxPatterns) throw new ArgumentException(Texts.F("Не более {0} правил авто-сортировки.", MaxPatterns));
         return result;
     }
     public static string Format(IEnumerable<string> patterns) => string.Join("; ", patterns);
@@ -30,7 +31,7 @@ public static class FenceAutoSort
     {
         if (string.IsNullOrWhiteSpace(pattern) || pattern.Length > MaxPatternLength || pattern.IndexOfAny(['\\', '/', ':', '"', '<', '>', '|']) >= 0 ||
             pattern.Any(char.IsControl))
-            throw new ArgumentException($"Неверное правило авто-сортировки «{pattern}». Пример: *.png; *.lnk; Steam*");
+            throw new ArgumentException(Texts.F("Неверное правило авто-сортировки «{0}». Пример: *.png; *.lnk; Steam*", pattern));
     }
 
     public static bool Matches(string identity, string pattern)

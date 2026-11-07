@@ -1,3 +1,4 @@
+using DesktopOrganizer.Core.Localization;
 using System.ComponentModel;
 using System.Runtime;
 using System.Windows;
@@ -29,7 +30,7 @@ public sealed class TrayApplicationService : IDisposable
         _lifetime = new(Show, Release, async () =>
         {
             if (!_viewModel.FlushAppearanceChanges())
-                throw new InvalidOperationException("Не удалось сохранить оформление группы. Повторите выход после устранения ошибки записи.");
+                throw new InvalidOperationException(Texts.T("Не удалось сохранить оформление группы. Повторите выход после устранения ошибки записи."));
             if (_window is not null) _window.IsEnabled = false;
             try { await desktop.PrepareExitAsync(); }
             finally { if (_window is not null) _window.IsEnabled = true; }
@@ -37,9 +38,9 @@ public sealed class TrayApplicationService : IDisposable
         {
             logger.LogError(error, "Graceful tray exit failed; application remains running");
             if (_window is { IsVisible: true } owner)
-                MessageBox.Show(owner, "Не удалось завершить работу безопасно. Приложение продолжает работать.\n" + error.Message,
+                MessageBox.Show(owner, Texts.T("Не удалось завершить работу безопасно. Приложение продолжает работать.\n") + error.Message,
                     "DesktopOrganizer", MessageBoxButton.OK, MessageBoxImage.Error);
-            else MessageBox.Show("Не удалось завершить работу безопасно. Приложение продолжает работать.\n" + error.Message,
+            else MessageBox.Show(Texts.T("Не удалось завершить работу безопасно. Приложение продолжает работать.\n") + error.Message,
                 "DesktopOrganizer", MessageBoxButton.OK, MessageBoxImage.Error);
         });
     }

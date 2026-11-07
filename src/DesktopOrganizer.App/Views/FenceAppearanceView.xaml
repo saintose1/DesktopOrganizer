@@ -1,4 +1,4 @@
-<UserControl x:Class="DesktopOrganizer.App.Views.FenceAppearanceView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:views="clr-namespace:DesktopOrganizer.App.Views">
+<UserControl xmlns:l="clr-namespace:DesktopOrganizer.App.Views" x:Class="DesktopOrganizer.App.Views.FenceAppearanceView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:views="clr-namespace:DesktopOrganizer.App.Views">
   <UserControl.Resources>
     <views:FontPreviewConverter x:Key="FontPreview" />
     <Style TargetType="ComboBox">
@@ -165,13 +165,13 @@
   </UserControl.Resources>
   <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
     <StackPanel>
-      <TextBlock Text="ОФОРМЛЕНИЕ ГРУППЫ" Style="{StaticResource Caption}" />
-      <TextBlock Text="{Binding SelectedFence.Name, TargetNullValue=Выберите группу, FallbackValue=Выберите группу}" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,12" />
+      <TextBlock Text="{l:Tr 'ОФОРМЛЕНИЕ ГРУППЫ'}" Style="{StaticResource Caption}" />
+      <TextBlock Text="{Binding SelectedFence.Name, TargetNullValue={l:Tr 'Выберите группу'}, FallbackValue={l:Tr 'Выберите группу'}}" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,12" />
       <StackPanel IsEnabled="{Binding CanEdit}">
         <StackPanel DataContext="{Binding AppearanceEditor}">
-          <Expander Header="Заголовок" IsExpanded="True">
+          <Expander Header="{l:Tr 'Заголовок'}" IsExpanded="True">
             <StackPanel>
-              <TextBlock Text="Название" Foreground="{StaticResource Muted}" FontSize="12" />
+              <TextBlock Text="{l:Tr 'Название'}" Foreground="{StaticResource Muted}" FontSize="12" />
               <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.AutomationId="FenceName" Margin="0,4,0,12" />
               <Grid>
                 <Grid.ColumnDefinitions>
@@ -180,7 +180,7 @@
                   <ColumnDefinition Width="65" />
                 </Grid.ColumnDefinitions>
                 <StackPanel>
-                  <TextBlock Text="Шрифт" Foreground="{StaticResource Muted}" FontSize="12" />
+                  <TextBlock Text="{l:Tr 'Шрифт'}" Foreground="{StaticResource Muted}" FontSize="12" />
                   <ComboBox ItemsSource="{Binding FontFamilies}" SelectedItem="{Binding FontFamily}" AutomationProperties.AutomationId="TitleFont">
                     <ComboBox.ItemTemplate>
                       <DataTemplate>
@@ -190,28 +190,28 @@
                   </ComboBox>
                 </StackPanel>
                 <StackPanel Grid.Column="2">
-                  <TextBlock Text="Размер" Foreground="{StaticResource Muted}" FontSize="12" />
-                  <TextBox Text="{Binding FontSize, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.AutomationId="TitleSize" Margin="0,4,0,12" ToolTip="От 8 до 28; высота заголовка остаётся прежней" />
+                  <TextBlock Text="{l:Tr 'Размер'}" Foreground="{StaticResource Muted}" FontSize="12" />
+                  <TextBox Text="{Binding FontSize, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.AutomationId="TitleSize" Margin="0,4,0,12" ToolTip="{l:Tr 'От 8 до 28; высота заголовка остаётся прежней'}" />
                 </StackPanel>
               </Grid>
               <StackPanel Orientation="Horizontal">
-                <CheckBox Content="Жирный" IsChecked="{Binding Bold}" AutomationProperties.AutomationId="TitleBold" />
-                <CheckBox Content="Курсив" IsChecked="{Binding Italic}" AutomationProperties.AutomationId="TitleItalic" />
+                <CheckBox Content="{l:Tr 'Жирный'}" IsChecked="{Binding Bold}" AutomationProperties.AutomationId="TitleBold" />
+                <CheckBox Content="{l:Tr 'Курсив'}" IsChecked="{Binding Italic}" AutomationProperties.AutomationId="TitleItalic" />
               </StackPanel>
-              <TextBlock Text="Выравнивание" Foreground="{StaticResource Muted}" FontSize="12" />
+              <TextBlock Text="{l:Tr 'Выравнивание'}" Foreground="{StaticResource Muted}" FontSize="12" />
               <ComboBox ItemsSource="{Binding Alignments}" SelectedItem="{Binding Alignment}" AutomationProperties.AutomationId="TitleAlignment">
                 <ComboBox.ItemTemplate>
                   <DataTemplate>
                     <TextBlock>
                       <TextBlock.Style>
                         <Style TargetType="TextBlock">
-                          <Setter Property="Text" Value="Слева" />
+                          <Setter Property="Text" Value="{l:Tr 'Слева'}" />
                           <Style.Triggers>
                             <DataTrigger Binding="{Binding}" Value="Center">
-                              <Setter Property="Text" Value="По центру" />
+                              <Setter Property="Text" Value="{l:Tr 'По центру'}" />
                             </DataTrigger>
                             <DataTrigger Binding="{Binding}" Value="Right">
-                              <Setter Property="Text" Value="Справа" />
+                              <Setter Property="Text" Value="{l:Tr 'Справа'}" />
                             </DataTrigger>
                           </Style.Triggers>
                         </Style>
@@ -220,38 +220,38 @@
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>
-              <TextBlock Text="Цвет текста" Foreground="{StaticResource Muted}" FontSize="12" />
+              <TextBlock Text="{l:Tr 'Цвет текста'}" Foreground="{StaticResource Muted}" FontSize="12" />
               <views:ColorPickerField Color="{Binding TextColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.AutomationId="TitleColor" />
             </StackPanel>
           </Expander>
-          <Expander Header="Панель заголовка">
+          <Expander Header="{l:Tr 'Панель заголовка'}">
             <StackPanel>
-              <TextBlock Text="Цвет" Foreground="{StaticResource Muted}" FontSize="12" />
+              <TextBlock Text="{l:Tr 'Цвет'}" Foreground="{StaticResource Muted}" FontSize="12" />
               <views:ColorPickerField Color="{Binding HeaderColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.AutomationId="HeaderColor" />
               <TextBlock Foreground="{StaticResource Muted}" FontSize="12">
-                <Run Text="Непрозрачность: " />
+                <Run Text="{l:Tr 'Непрозрачность: '}" />
                 <Run Text="{Binding HeaderOpacity, Mode=OneWay, StringFormat={}{0:F0}%}" />
               </TextBlock>
               <Slider Value="{Binding HeaderOpacity, Mode=TwoWay}" AutomationProperties.AutomationId="HeaderOpacity" />
             </StackPanel>
           </Expander>
-          <Expander Header="Основной фон">
+          <Expander Header="{l:Tr 'Основной фон'}">
             <StackPanel>
-              <TextBlock Text="Цвет" Foreground="{StaticResource Muted}" FontSize="12" />
+              <TextBlock Text="{l:Tr 'Цвет'}" Foreground="{StaticResource Muted}" FontSize="12" />
               <views:ColorPickerField Color="{Binding BodyColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.AutomationId="BodyColor" />
               <TextBlock Foreground="{StaticResource Muted}" FontSize="12">
-                <Run Text="Непрозрачность: " />
+                <Run Text="{l:Tr 'Непрозрачность: '}" />
                 <Run Text="{Binding BodyOpacity, Mode=OneWay, StringFormat={}{0:F0}%}" />
               </TextBlock>
               <Slider Value="{Binding BodyOpacity, Mode=TwoWay}" AutomationProperties.AutomationId="BodyOpacity" />
             </StackPanel>
           </Expander>
-          <Expander Header="Рамка">
+          <Expander Header="{l:Tr 'Рамка'}">
             <StackPanel>
-              <TextBlock Text="Цвет" Foreground="{StaticResource Muted}" FontSize="12" />
+              <TextBlock Text="{l:Tr 'Цвет'}" Foreground="{StaticResource Muted}" FontSize="12" />
               <views:ColorPickerField Color="{Binding BorderColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.AutomationId="BorderColor" />
               <TextBlock Foreground="{StaticResource Muted}" FontSize="12">
-                <Run Text="Непрозрачность: " />
+                <Run Text="{l:Tr 'Непрозрачность: '}" />
                 <Run Text="{Binding BorderOpacity, Mode=OneWay, StringFormat={}{0:F0}%}" />
               </TextBlock>
               <Slider Value="{Binding BorderOpacity, Mode=TwoWay}" AutomationProperties.AutomationId="BorderOpacity" />
@@ -259,16 +259,16 @@
           </Expander>
           <TextBlock Text="{Binding Error}" Foreground="#FFA9B9" TextWrapping="Wrap" Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" Margin="0,8,0,8" />
         </StackPanel>
-        <TextBlock Text="Изменения видны на рабочем столе и сохраняются автоматически." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="12" Margin="0,12,0,16" />
-        <Expander Header="Авто-сортировка" IsExpanded="False" Margin="0,0,0,16">
+        <TextBlock Text="{l:Tr 'Изменения видны на рабочем столе и сохраняются автоматически.'}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="12" Margin="0,12,0,16" />
+        <Expander Header="{l:Tr 'Авто-сортировка'}" IsExpanded="False" Margin="0,0,0,16">
           <StackPanel>
-            <TextBlock Text="Новые файлы на рабочем столе с подходящим именем сами попадут в эту группу. Через ; или пробел: *.png; *.lnk; Steam*"
+            <TextBlock Text="{l:Tr 'Новые файлы на рабочем столе с подходящим именем сами попадут в эту группу. Через ; или пробел: *.png; *.lnk; Steam*'}"
                        Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" />
             <TextBox Text="{Binding AutoSort, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.AutomationId="FenceAutoSort" Margin="0,4,0,8" />
-            <Button Content="Сохранить правила" Command="{Binding SaveAutoSortCommand}" AutomationProperties.AutomationId="SaveAutoSort" HorizontalAlignment="Left" />
+            <Button Content="{l:Tr 'Сохранить правила'}" Command="{Binding SaveAutoSortCommand}" AutomationProperties.AutomationId="SaveAutoSort" HorizontalAlignment="Left" />
           </StackPanel>
         </Expander>
-        <Button Content="Удалить группу" Command="{Binding DeleteCommand}" AutomationProperties.AutomationId="DeleteFence" />
+        <Button Content="{l:Tr 'Удалить группу'}" Command="{Binding DeleteCommand}" AutomationProperties.AutomationId="DeleteFence" />
       </StackPanel>
     </StackPanel>
   </ScrollViewer>
