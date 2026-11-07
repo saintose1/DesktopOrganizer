@@ -115,6 +115,7 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         try { var pointer = _host.ReadHoverPointer(); OnHoverPointer(pointer.Point, pointer.OnDesktop); }
         catch (Exception error) { _logger.LogDebug(error, "Hover pointer unavailable"); }
     }
+    private const double PrewarmMargin = 60, PrewarmApproach = 140;
     private void OnHoverPointer(DesktopPoint point, bool onDesktop)
     {
         if (_disposed || !_started) return;
@@ -134,6 +135,12 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
             var inside = onDesktop && x >= 0 && x < displayed.Width && y >= 0 &&
                 y < FenceInteractionGeometry.VisibleHeight(displayed, rendered.Scale);
             var onHandle = inside && FenceInteractionGeometry.HitTest(displayed, x, y, rendered.Scale) != FenceHit.None;
+            // Approaching a collapsed group: Explorer needs ~0.6 s to re-add hidden items, so they are returned
+            // (still parked offscreen) before the hover expand, which then animates them with the Fence.
+            if (enabled && onDesktop && displayed.IsCollapsed && !busy && _icons is not null &&
+                x >= -PrewarmMargin * rendered.Scale && x < displayed.Width + PrewarmMargin * rendered.Scale &&
+                y >= 0 && y < (FenceInteractionGeometry.HeaderHeight + PrewarmApproach) * rendered.Scale)
+                _icons.PrewarmGroup(fence);
             hover.Observe(enabled, fence.IsCollapsed, inside, onHandle, busy, now);
         }
         ScheduleHoverDeadline();

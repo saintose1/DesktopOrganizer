@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace DesktopOrganizer.Infrastructure.Interop;
 
 [SupportedOSPlatform("windows")]
-public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionReader, IDesktopDropPositioner, IDesktopDropReconciler, IDesktopPositionDiagnostics, IDesktopIconAnimationPositioner, IDisposable
+public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSelectionReader, IDesktopDropPositioner, IDesktopDropReconciler, IDesktopPositionDiagnostics, IDesktopIconAnimationPositioner, IDesktopItemConcealment, IDisposable
 {
     private readonly NativeStaWorker _worker;
     private readonly DesktopDiscovery _discovery;
@@ -27,9 +27,10 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         { return false; }
     }
-    public DesktopIconService(ILogger<DesktopIconService> logger, ILogger<DesktopDiscovery> discoveryLogger, ExplorerInteractionTrace? interactionTrace = null)
+    public DesktopIconService(ILogger<DesktopIconService> logger, ILogger<DesktopDiscovery> discoveryLogger, ExplorerInteractionTrace? interactionTrace = null, string? concealmentJournal = null)
     {
         _logger = logger; _discovery = new(discoveryLogger); _trace = interactionTrace;
+        _concealmentPath = concealmentJournal is null ? null : Path.GetFullPath(concealmentJournal); LoadConcealment();
         _worker = new NativeStaWorker(() =>
         {
             foreach (var animation in _animations.ToArray()) animation.ReleaseOnWorker();
@@ -551,6 +552,40 @@ public sealed class DesktopIconService : IDesktopIconService, IDesktopSelectionR
             // This Explorer can retain the previous rendered positions after a successful
             // SelectAndPositionItems, even while GetItemPosition reports the new coordinates.
             // Complete the documented Shell redraw path before acknowledging the visual move.
+        }
+        /// <summary>
+        /// Brings items whose Hidden attribute was cleared back into the view and places them, all inside one
+        /// documented redraw lease: Explorer adds a re-created item at its first free grid slot, which is never
+        /// presented. Returns the identities that appeared.
+        /// </summary>
+        public IReadOnlyList<string> Reveal(IReadOnlyList<(string Id, DesktopPoint? Position)> items, CancellationToken cancellationToken)
+        {
+            SetRedraw(false);
+            try
+            {
+                _trace?.Mark("Reveal.notify", items.Count);
+                // One SHCNE_UPDATEDIR per folder re-adds every un-hidden item in a single re-enumeration
+                // (about twice as fast as per-item DELETE+CREATE pairs for a group).
+                foreach (var folder in items.Select(i => Path.GetDirectoryName(i.Id)).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase))
+                    NotifyItem(0x1000, folder);
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                DesktopIconSnapshot? snapshot = null;
+                while (System.Diagnostics.Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(2))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var read = Read(cancellationToken);
+                    snapshot = read;
+                    if (read.Error is null && items.All(i => read.Icons.Any(icon => FenceIconLayout.IdentityComparer.Equals(icon.StableId, i.Id)))) break;
+                    Thread.Sleep(5);
+                }
+                var present = snapshot?.Icons.Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer) ?? [];
+                _trace?.Mark("Reveal.present", present.Count);
+                var targets = items.Where(i => i.Position is not null && present.Contains(i.Id))
+                    .Select(i => new DesktopIconTarget(i.Id, i.Position!.Value)).ToArray();
+                if (targets.Length != 0) Position(targets, cancellationToken, completeRedraw: false);
+                return items.Where(i => present.Contains(i.Id)).Select(i => i.Id).ToArray();
+            }
+            finally { SetRedraw(true); }
         }
         public IReadOnlyList<string> ProbeRedrawVisibility()
         {

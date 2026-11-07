@@ -19,11 +19,12 @@ public sealed class DesktopIconCoordinator : IDisposable
     private readonly IconLayoutTransaction _transaction;
     private readonly Win32DesktopHost _host;
     private readonly ILogger<DesktopIconCoordinator> _logger;
-    private readonly DispatcherTimer _timer, _releaseTimer, _followUp;
+    private readonly DispatcherTimer _timer, _releaseTimer, _followUp, _approachExpiry;
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Func<IReadOnlyList<Fence>, bool> _commit;
     private readonly IIconRecoveryStore? _recoveryStore;
+    private readonly IDesktopItemConcealment? _concealment;
     private IReadOnlyList<DesktopIconTarget> _recovery = [];
     private IReadOnlyList<Fence> _fences = [];
     private Dictionary<string, DesktopIcon> _matched = new(FenceIconLayout.IdentityComparer);
@@ -55,11 +56,14 @@ public sealed class DesktopIconCoordinator : IDisposable
         Func<IReadOnlyList<Fence>, bool> commit, IIconRecoveryStore? recoveryStore = null)
     {
         _icons = icons; _transaction = new(icons); _host = host; _logger = logger; _commit = commit; _recoveryStore = recoveryStore;
+        _concealment = icons as IDesktopItemConcealment;
         // Explorer item WinEvents, Shell change notifications and raw input drive observation.
         // A full inventory read costs hundreds of cross-process calls, so the idle poll is only a safety net.
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
         _followUp = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
         _followUp.Tick += (_, _) => { _followUp.Stop(); RequestObservation(); };
+        _approachExpiry = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(500) };
+        _approachExpiry.Tick += OnApproachExpiry;
         _releaseTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(16) };
         _timer.Tick += OnTick; _releaseTimer.Tick += OnReleaseTick;
         _host.IconPositionsChanged += OnExplorerChanged;
@@ -98,6 +102,10 @@ public sealed class DesktopIconCoordinator : IDisposable
                 _selectionRead = CaptureSelectionAsync(input.SelectionSnapshot, _explorerGesture.Sequence);
             else if (!input.Background && _icons is IDesktopSelectionReader reader)
                 _selectionRead = CaptureSelectionAsync(reader.ReadSelectionAsync(input.Point, _shutdown.Token), _explorerGesture.Sequence);
+            // A press may start a drag: groups prepared for a hover leave Explorer now, while the drag
+            // is still in progress, instead of waiting for the pointer to leave the Fence row.
+            _approachedAt.Clear();
+            _ = ConcealParkedNowAsync();
         }
         else if (input.Phase == ExplorerPointerPhase.DragStarted && _explorerGesture.StartDrag())
         {
@@ -207,6 +215,7 @@ public sealed class DesktopIconCoordinator : IDisposable
             // Polling observes Explorer, but must never infer a partial drop from individual bounds.
             ApplySnapshot(snapshot); CompleteGesture();
             if (available) await ReparkStrandedAsync(snapshot);
+            if (available) await SettleConcealmentAsync();
             if (available) await ReconcileMembershipAsync(snapshot);
         }
         catch (OperationCanceledException) { }
@@ -311,14 +320,138 @@ public sealed class DesktopIconCoordinator : IDisposable
                 changed.SelectMany(f => f.Icons).Count(i => drop.DraggedIds.Contains(i.StableId, FenceIconLayout.IdentityComparer)),
                 targets.Count, restoredParking, counters.Batches - beforeCounters.Batches, counters.RedrawCompletions - beforeCounters.RedrawCompletions, _host.RepaintCount - beforePaints);
             if (_explorerGesture.Sequence == sequence) CompleteGesture();
+            // Hide newly parked items right away: continuous drags leave no idle observation to do it.
+            await SettleConcealmentAsync();
         }
         finally { _applyingDrop = false; }
+    }
+    private HashSet<string> ConcealedIds() => (_concealment?.Concealed ?? []).ToHashSet(FenceIconLayout.IdentityComparer);
+    private bool OnMonitors(DesktopIcon icon) => _monitors.Any(m => icon.Bounds.X < m.X + m.Width && icon.Bounds.X + icon.Bounds.Width > m.X &&
+        icon.Bounds.Y < m.Y + m.Height && icon.Bounds.Y + icon.Bounds.Height > m.Y);
+    /// <summary>
+    /// Settled parked items of collapsed groups get the Hidden attribute (nothing left for Explorer to reflow on a
+    /// drop); items this application hid that no longer belong to a collapsed group are returned to their place.
+    /// </summary>
+    private async Task SettleConcealmentAsync()
+    {
+        if (_concealment is null || Busy() || _monitors.Count == 0) return;
+        var concealed = ConcealedIds();
+        var collapsed = _fences.Where(f => f.IsCollapsed).SelectMany(f => f.Icons).Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
+        // A group the pointer is approaching stays in Explorer (parked) so its hover expand can animate it.
+        var approached = _fences.Where(f => f.IsCollapsed && RecentlyApproached(f.Id)).SelectMany(f => f.Icons)
+            .Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
+        var reveal = concealed.Where(id => !collapsed.Contains(id)).Select(id => (id, RevealPosition(id))).ToArray();
+        if (reveal.Length != 0)
+        {
+            await _concealment.RevealAsync(reveal);
+            var snapshot = await _icons.ReadAsync(_shutdown.Token);
+            if (snapshot.Connected && snapshot.Error is null) ApplySnapshot(snapshot);
+            _logger.LogInformation("Returned {Count} hidden items that no longer belong to a collapsed group", reveal.Length);
+        }
+        if (Busy()) return;
+        // While the pointer works with the Fence row, hiding makes Explorer re-enumerate for about a second and
+        // the next expand/collapse frames would wait for it. Hide once the pointer has left all groups.
+        if (_approachedAt.Values.Any(at => Stopwatch.GetElapsedTime(at) < ApproachLease)) return;
+        var conceal = collapsed.Where(id => !concealed.Contains(id) && !approached.Contains(id) &&
+            _matched.TryGetValue(id, out var icon) && !OnMonitors(icon)).ToArray();
+        if (conceal.Length != 0) await _concealment.ConcealAsync(conceal, _shutdown.Token);
+    }
+    private async Task ConcealParkedNowAsync()
+    {
+        if (_concealment is null || _monitors.Count == 0 || InteractionActive) return;
+        try
+        {
+            var concealed = ConcealedIds();
+            var parked = _fences.Where(f => f.IsCollapsed).SelectMany(f => f.Icons).Select(i => i.StableId)
+                .Where(id => !concealed.Contains(id) && _matched.TryGetValue(id, out var icon) && !OnMonitors(icon)).ToArray();
+            if (parked.Length != 0) await _concealment.ConcealAsync(parked, _shutdown.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { _logger.LogWarning(error, "Could not hide parked items at gesture start"); }
+    }
+    private DesktopPoint? RevealPosition(string id)
+    {
+        foreach (var fence in _fences)
+            foreach (var icon in fence.Icons)
+                if (FenceIconLayout.IdentityComparer.Equals(icon.StableId, id))
+                    return fence.IsCollapsed ? null : IconPlacement.Normal(fence, icon);
+        foreach (var target in _recovery)
+            if (FenceIconLayout.IdentityComparer.Equals(target.StableId, id)) return target.Position;
+        return null;
+    }
+    private async Task RevealInPlaceAsync(Fence expanded, IReadOnlyList<DesktopIconAssignment> items)
+    {
+        try
+        {
+            try { await _prewarm; } catch { } // an approach reveal already in flight finishes first
+            var concealed = ConcealedIds();
+            var hidden = items.Where(i => concealed.Contains(i.StableId)).ToArray();
+            _host.Trace.Mark("Reveal.inPlace", hidden.Length);
+            if (hidden.Length != 0)
+                await _concealment!.RevealAsync(hidden.Select(i => (i.StableId, (DesktopPoint?)IconPlacement.Normal(expanded, i))).ToArray());
+            // Items the approach reveal returned to parking join the Fence if it is still expanded; never in the
+            // middle of another Fence transition (that one owns the positions and verifies them).
+            var waited = Stopwatch.StartNew();
+            while ((InteractionActive || _moving) && waited.Elapsed < TimeSpan.FromSeconds(1) && !_disposed) await Task.Delay(16);
+            var current = _fences.FirstOrDefault(f => f.Id == expanded.Id);
+            var parked = items.Where(i => !concealed.Contains(i.StableId)).Select(i => new DesktopIconTarget(i.StableId, IconPlacement.Normal(expanded, i))).ToArray();
+            if (parked.Length != 0 && current is { IsCollapsed: false } && !InteractionActive && !_disposed) await _icons.PositionAsync(parked, _shutdown.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { _logger.LogWarning(error, "Could not return hidden items into an expanding Fence"); }
+        finally { if (!_disposed) RequestObservation(); }
+    }
+    private Task _prewarm = Task.CompletedTask;
+    private Guid? _prewarmFence;
+    private readonly Dictionary<Guid, long> _approachedAt = [];
+    private static readonly TimeSpan ApproachLease = TimeSpan.FromSeconds(1.5);
+    private bool RecentlyApproached(Guid id) => _approachedAt.TryGetValue(id, out var at) && Stopwatch.GetElapsedTime(at) < ApproachLease;
+    /// <summary>
+    /// The pointer approaches a collapsed group: return its hidden items into Explorer (still parked offscreen)
+    /// so a hover expand animates them with the Fence. Not during Explorer gestures, so a drop never meets them.
+    /// </summary>
+    public void PrewarmGroup(Fence fence)
+    {
+        if (_disposed || _stopping || _concealment is null || !_initialized || !_positioningAvailable || !Enabled ||
+            InteractionActive || ExplorerBusy()) return;
+        _approachedAt[fence.Id] = Stopwatch.GetTimestamp();
+        if (!_approachExpiry.IsEnabled) _approachExpiry.Start();
+        if (!_prewarm.IsCompleted) return;
+        if (!ConcealedIds().Overlaps(fence.Icons.Select(i => i.StableId))) return;
+        _prewarmFence = fence.Id;
+        _prewarm = PrewarmAsync(fence);
+    }
+    private async Task PrewarmAsync(Fence fence)
+    {
+        try { _host.Trace.Mark("Reveal.approach", fence.Icons.Length); await RevealGroupAsync(fence); }
+        catch (Exception error) { _logger.LogWarning(error, "Could not prepare a collapsed group for hover"); }
+    }
+    private void OnApproachExpiry(object? sender, EventArgs args)
+    {
+        // Once the pointer has left every approach zone, settle hides the prepared groups again.
+        if (_approachedAt.Values.Any(at => Stopwatch.GetElapsedTime(at) < ApproachLease)) return;
+        _approachExpiry.Stop(); _approachedAt.Clear(); RequestObservation();
+    }
+    /// <summary>Before an expand starts, hidden items return to their parking slots within one Shell redraw lease.</summary>
+    private async Task RevealGroupAsync(Fence target)
+    {
+        if (_concealment is null) return;
+        var concealed = ConcealedIds();
+        var ids = target.Icons.Select(i => i.StableId).Where(concealed.Contains).ToHashSet(FenceIconLayout.IdentityComparer);
+        if (ids.Count == 0) return;
+        var parkedGroups = _fences.Select(f => f.Id == target.Id && !f.IsCollapsed ? f.ToggleCollapsed() : f).ToArray();
+        var parking = IconPlacement.Targets(parkedGroups, _monitors, Metrics).Where(t => ids.Contains(t.StableId))
+            .Select(t => (t.StableId, (DesktopPoint?)t.Position)).ToArray();
+        _host.Trace.Mark("Reveal.group", parking.Length);
+        await _concealment.RevealAsync(parking);
     }
     private bool ExplorerBusy() => _explorerGesture.InProgress || _host.HasExplorerGesture || _host.IsLeftButtonDown || _host.IsExplorerDragging;
     private async Task ReconcileMembershipAsync(DesktopIconSnapshot snapshot)
     {
         var present = FenceIconLayout.Match(snapshot.Icons);
-        var missing = _fences.SelectMany(f => f.Icons).Select(i => i.StableId).Where(id => !present.ContainsKey(id))
+        // Items this application hid are absent from the view by design, not removed from the desktop.
+        var concealed = ConcealedIds();
+        var missing = _fences.SelectMany(f => f.Icons).Select(i => i.StableId).Where(id => !present.ContainsKey(id) && !concealed.Contains(id))
             .ToHashSet(FenceIconLayout.IdentityComparer);
         var confirmed = missing.Intersect(_previousMissing, FenceIconLayout.IdentityComparer).ToHashSet(FenceIconLayout.IdentityComparer);
         _removed.RemoveWhere(present.ContainsKey); // A restored item invalidates an earlier DELETE, even before the first missing read.
@@ -399,6 +532,12 @@ public sealed class DesktopIconCoordinator : IDisposable
         if (fence.Icons.IsEmpty) { present(); _host.FlushDamage(); LastPresentationAt = Stopwatch.GetTimestamp(); return; }
         if (!_initialized || !_positioningAvailable) throw new InvalidOperationException("Explorer icon positioning is not ready.");
         await WaitForPresentationAsync();
+        if (!fence.IsCollapsed && ConcealedIds().Overlaps(fence.Icons.Select(i => i.StableId)))
+        {
+            await RevealGroupAsync(fence);
+            var revealed = await _icons.ReadAsync(_shutdown.Token);
+            if (revealed.Connected && revealed.Error is null) ApplySnapshot(revealed);
+        }
         // Return positions are armed during startup/assignment/end-of-gesture, never written on the collapse visual path.
         if (fence.IsCollapsed && fence.Icons.Any(i => !_recovery.Any(r => FenceIconLayout.IdentityComparer.Equals(r.StableId, i.StableId))))
             throw new InvalidOperationException("Icon recovery must be armed before collapse.");
@@ -408,12 +547,18 @@ public sealed class DesktopIconCoordinator : IDisposable
         var batch = new MoveBatch(Math.Max(1, targets.Length)) { Present = present, Completion = completion };
         foreach (var target in targets) batch.Add(target);
         Enqueue(batch); await completion.Task;
+        RequestObservation(); // settles the Hidden attribute layer for the new state
     }
     public async Task VerifyTransitionAsync(Fence fence)
     {
         var proposed = _fences.Select(f => f.Id == fence.Id ? fence : f).ToArray();
-        var targets = IconPlacement.Targets(proposed, _monitors, Metrics).Where(t => _matched.ContainsKey(t.StableId)).ToArray();
-        if (!IconPlacement.AtTargets(await _icons.ReadAsync(_shutdown.Token), targets))
+        var snapshot = await _icons.ReadAsync(_shutdown.Token);
+        var present = FenceIconLayout.Match(snapshot.Icons);
+        // Only this group's items that Explorer currently shows: items of other groups (or this one) may be
+        // hidden by the attribute layer meanwhile, which is not a failed transition.
+        var own = fence.Icons.Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
+        var targets = IconPlacement.Targets(proposed, _monitors, Metrics).Where(t => own.Contains(t.StableId) && present.ContainsKey(t.StableId)).ToArray();
+        if (!IconPlacement.AtTargets(snapshot, targets))
             throw new InvalidOperationException("Explorer did not retain the hide/show positions.");
     }
     public async Task<AnimatedTransition?> BeginAnimatedTransitionAsync(Fence target, bool startIsCollapsed)
@@ -422,6 +567,20 @@ public sealed class DesktopIconCoordinator : IDisposable
         if (!_initialized || !_positioningAvailable || _icons is not IDesktopIconAnimationPositioner positioner)
             throw new InvalidOperationException("Explorer icon animation is not ready.");
         await WaitForPresentationAsync();
+        if (startIsCollapsed && _concealment is not null)
+        {
+            var concealed = ConcealedIds();
+            var hidden = target.Icons.Where(i => concealed.Contains(i.StableId)).ToArray();
+            var approaching = !_prewarm.IsCompleted && _prewarmFence == target.Id;
+            if (approaching || hidden.Length != 0 && hidden.Length == target.Icons.Length)
+            {
+                // Explorer needs ~0.6 s to re-add a hidden group. The Fence expands at once; the items
+                // appear directly in their slots (inside one redraw lease) as soon as Explorer has them.
+                _ = RevealInPlaceAsync(target, approaching ? target.Icons.ToArray() : hidden);
+                return null;
+            }
+            if (hidden.Length != 0) await RevealGroupAsync(target); // mixed group: hidden items rejoin parking first
+        }
         // One snapshot before the shared clock starts. Observation/polling is gated throughout the transition.
         var snapshot = await _icons.ReadAsync(_shutdown.Token);
         if (!snapshot.Connected || !snapshot.CanPosition || snapshot.Error is not null) throw new InvalidOperationException(snapshot.Error ?? "Explorer is unavailable.");
@@ -518,6 +677,7 @@ public sealed class DesktopIconCoordinator : IDisposable
         {
             if (_disposed) return; _disposed = true;
             await _shell.DisposeAsync();
+            if (!_owner._disposed) _owner.RequestObservation(); // settles the Hidden attribute layer after collapse
         }
     }
     public void ArmRecovery() => WriteRecovery(IconPlacement.ReturnPositions(_fences));
@@ -581,6 +741,7 @@ public sealed class DesktopIconCoordinator : IDisposable
                         PrepareRecovery(batch.Recovery!);
                         ApplySnapshot(await _transaction.PositionVerifiedAsync(batch, _shutdown.Token));
                         CompleteRecovery(batch.Recovery!);
+                        _requested = true; // settle the Hidden attribute layer for the restored layout
                     }
                     else
                     {
@@ -644,6 +805,14 @@ public sealed class DesktopIconCoordinator : IDisposable
             LoadRecovery();
             var returns = _recovery.Concat(IconPlacement.ReturnPositions(_fences))
                 .GroupBy(t => t.StableId, FenceIconLayout.IdentityComparer).Select(g => g.Last()).ToArray();
+            if (_concealment is not null && _concealment.Concealed.Count != 0)
+            {
+                // Every item this application hid is shown again before exit, directly at its return position.
+                var positions = returns.ToDictionary(t => t.StableId, t => t.Position, FenceIconLayout.IdentityComparer);
+                await _concealment.RevealAsync(_concealment.Concealed
+                    .Select(id => (id, positions.TryGetValue(id, out var p) ? (DesktopPoint?)p : null)).ToArray());
+                _logger.LogInformation("Exit returned all hidden collapsed-group items");
+            }
             if (returns.Length == 0) return;
             var snapshot = await _icons.ReadAsync();
             if (!snapshot.Connected)
@@ -673,7 +842,7 @@ public sealed class DesktopIconCoordinator : IDisposable
         _host.IconRemoved -= OnIconRemoved;
         _host.ExplorerPointer -= OnExplorerPointer;
         _timer.Stop(); _timer.Tick -= OnTick; _releaseTimer.Stop(); _releaseTimer.Tick -= OnReleaseTick;
-        _followUp.Stop();
+        _followUp.Stop(); _approachExpiry.Stop(); _approachExpiry.Tick -= OnApproachExpiry;
         _shutdown.Cancel(); _pending?.Completion?.TrySetCanceled(); _pending?.Dispose(); _pending = null;
         _shutdown.Dispose();
         _idle?.TrySetCanceled();

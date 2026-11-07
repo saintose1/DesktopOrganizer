@@ -28,7 +28,9 @@ public static class DependencyInjection
         services.AddSingleton(p => new Win32DesktopHost(p.GetRequiredService<DesktopDiscovery>(),
             p.GetRequiredService<ILogger<Win32DesktopHost>>(), Path.Combine(storageDirectory, "desktop-presentation.json"),
             interactionTrace: p.GetRequiredService<ExplorerInteractionTrace>()));
-        services.AddSingleton<DesktopOrganizer.Core.Desktop.IDesktopIconService, DesktopIconService>();
+        services.AddSingleton<DesktopOrganizer.Core.Desktop.IDesktopIconService>(p => new DesktopIconService(
+            p.GetRequiredService<ILogger<DesktopIconService>>(), p.GetRequiredService<ILogger<DesktopDiscovery>>(),
+            p.GetRequiredService<ExplorerInteractionTrace>(), Path.Combine(storageDirectory, "hidden-icons.json")));
 
         services.AddSerilog((_, configuration) => configuration
             .MinimumLevel.Information()

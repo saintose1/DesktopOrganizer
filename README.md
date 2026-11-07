@@ -61,7 +61,8 @@ Wallpaper Engine удалён layered/color-key режим Explorer ListView; и
 [Native wallpaper composition](docs/FIX-WALLPAPER-NATIVE-COMPOSITION.md).
 Возврат вытолкнутых Explorer значков в parking сделан устойчивым (без «застывания»),
 реакция на drop ускорена; idle-опрос Explorer снижен с 250 ms до 2 s:
-[Post-drop flash](docs/FIX-DROP-FLASH-REDRAW-HOLD.md). Физическая проверка ожидается.
+[Post-drop flash](docs/FIX-DROP-FLASH-REDRAW-HOLD.md). Значки свёрнутых Fence дополнительно
+скрываются атрибутом Hidden (журнал `hidden-icons.json`, «Выход» возвращает их). Физическая проверка ожидается.
 
 ## Запуск
 

@@ -28,3 +28,21 @@ public interface IDesktopIconService
     Task<DesktopIconSnapshot> ReadAsync(CancellationToken cancellationToken = default);
     Task PositionAsync(IReadOnlyList<DesktopIconTarget> targets, CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Items of collapsed groups additionally carry the documented Hidden file attribute, so Explorer has nothing
+/// to reflow onto the desktop during native drops. Parking stays the presentation and the fallback for items
+/// that cannot be hidden (no write access, virtual items, "show hidden files" enabled).
+/// </summary>
+public interface IDesktopItemConcealment
+{
+    /// <summary>Items currently hidden by this application (journaled; survives restarts).</summary>
+    IReadOnlyCollection<string> Concealed { get; }
+    /// <summary>Hides the given items; returns those actually hidden by this call.</summary>
+    Task<IReadOnlyList<string>> ConcealAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Clears the attribute and returns the items into the view at the given positions within one Shell redraw
+    /// lease, so Explorer's interim placement is never presented. A null position leaves Explorer's placement.
+    /// </summary>
+    Task RevealAsync(IReadOnlyList<(string Id, DesktopPoint? Position)> items, CancellationToken cancellationToken = default);
+}
