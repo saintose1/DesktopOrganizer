@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write # attach release assets on version tags
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore DesktopOrganizer.sln
+
+      - name: Build (warnings are errors)
+        run: dotnet build DesktopOrganizer.sln -c Release --no-restore
+
+      - name: Unit tests
+        run: dotnet test DesktopOrganizer.sln -c Release --no-build
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Publish self-contained win-x64
+        run: dotnet publish src/DesktopOrganizer.App/DesktopOrganizer.App.csproj -c Release -r win-x64 --self-contained true -p:Version=${{ steps.version.outputs.value }} -p:DebugType=none -o artifacts/publish/DesktopOrganizer
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path artifacts/publish/DesktopOrganizer/* -DestinationPath artifacts/DesktopOrganizer-${{ steps.version.outputs.value }}-win-x64.zip
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.version.outputs.value }}" "/DSourceDir=$PWD\artifacts\publish\DesktopOrganizer" "/O$PWD\artifacts" installer\DesktopOrganizer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DesktopOrganizer-${{ steps.version.outputs.value }}
+          path: |
+            artifacts/*.zip
+            artifacts/*-setup.exe
+
+      - name: GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.zip
+            artifacts/*-setup.exe
+          generate_release_notes: true

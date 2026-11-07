@@ -1,5 +1,21 @@
 # DesktopOrganizer
 
+[![Build](https://github.com/saintose1/DesktopOrganizer/actions/workflows/build.yml/badge.svg)](https://github.com/saintose1/DesktopOrganizer/actions/workflows/build.yml)
+· MIT License · [Русская версия ниже](#возможности)
+
+**English.** An open-source desktop organizer for Windows 10/11 in the spirit of Fences: group your real
+desktop icons into translucent panels that collapse, expand on hover, snap to screen edges and to each
+other, and automatically collect new files by name rules (`*.png; *.lnk; Steam*`). Icons stay real
+Explorer items — clicks, double-clicks, drag and drop work natively; no DLL injection, no overlay.
+
+- **Install:** download `DesktopOrganizer-<version>-setup.exe` (per-user, no admin rights) or the portable
+  zip from [Releases](https://github.com/saintose1/DesktopOrganizer/releases). No .NET runtime required.
+- **Uninstall / recovery:** icons of collapsed groups carry the Windows *Hidden* attribute while the app
+  runs. *Exit* from the tray menu and the uninstaller restore them; after a crash run
+  `DesktopOrganizer.App.exe --RestoreHidden=true`. The list is kept in `%LOCALAPPDATA%\DesktopOrganizer\hidden-icons.json`.
+- **Build:** `dotnet build DesktopOrganizer.sln` and `dotnet test` (.NET 10 SDK);
+  `scripts/publish.ps1` makes the portable zip and, with Inno Setup 6, the installer.
+
 Windows-приложение для организации настоящих значков рабочего стола в группы **Fences**.
 Группы отображаются непосредственно на desktop Explorer, сохраняются между запусками
 и продолжают работать при скрытом главном окне.
@@ -21,6 +37,13 @@ Windows-приложение для организации настоящих з
 - Трей: крестик скрывает окно, один клик показывает его. «Выход» сохраняет состояние,
   возвращает временно скрытые значки и корректно освобождает ресурсы.
 - Autostart для текущего пользователя через HKCU Run, без прав администратора.
+- Привязка Fence при перетаскивании: к краям экрана и к соседним Fence (Alt — без привязки).
+- Авто-сортировка: в «Оформление группы → Авто-сортировка» задаются маски имён
+  (`*.png; *.lnk; Steam*`); новые файлы на рабочем столе сами попадают в первую подходящую Fence.
+- Значки свёрнутых Fence скрываются атрибутом Hidden, поэтому при перетаскивании ничего не мелькает.
+  Аварийное восстановление без запуска программы: `DesktopOrganizer.App.exe --RestoreHidden=true`.
+- Окно настроек создаётся только при открытии и освобождается при закрытии в трей (меньше памяти).
+- Установщик без прав администратора и portable zip собираются `scripts/publish.ps1` и GitHub Actions.
 - JSON persistence, безопасная запись, обработка повреждённых данных,
   логирование и восстановление подключения после потери Explorer.
 
@@ -90,7 +113,7 @@ dotnet run --project src/DesktopOrganizer.App -c Release
 Закрытие окна сохраняет процесс в трее. Для полного завершения выберите
 **ПКМ по значку трея → Выход**; перед заменой сборки завершайте приложение так же.
 Автозапуск привязан к текущему EXE: после перемещения приложения включите его заново.
-Installer/package в этой версии отсутствует.
+Установщик: `DesktopOrganizer-<версия>-setup.exe` из GitHub Releases или `scripts/publish.ps1`.
 
 ## Данные и приватность
 

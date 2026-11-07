@@ -17,6 +17,7 @@ internal sealed class DesktopFenceInput(Win32DesktopHost host, nint window)
     private NativeMethods.Point _start;
     private double _gestureScale;
     private IReadOnlyList<DesktopArea> _monitors = [];
+    private IReadOnlyList<DesktopBounds> _neighbours = [];
     private IconGridMetrics _metrics;
     private bool _buttonPressed;
     public bool Active => _original is not null || _buttonPressed;
@@ -61,6 +62,7 @@ internal sealed class DesktopFenceInput(Win32DesktopHost host, nint window)
         {
             _original = Fence;
             _monitors = host.GetMonitorAreas();
+            _neighbours = host.OtherFenceBounds(Fence.Id); // once per gesture, not per mouse move
             _metrics = host.IconMetrics;
             host.NotifyInteraction(new(Fence, InteractionPhase.Started) { Hit = _gesture });
         }
@@ -86,6 +88,10 @@ internal sealed class DesktopFenceInput(Win32DesktopHost host, nint window)
     {
         if (_original is null) return;
         var next = FenceInteractionGeometry.MoveOrResize(_original, _gesture, pointer.X - _start.X, pointer.Y - _start.Y, _gestureScale, _monitors);
+        // Magnetic edges while moving by the header; holding Alt places the Fence freely.
+        if (_gesture == FenceHit.Header && (NativeMethods.GetAsyncKeyState(0x12) & 0x8000) == 0)
+            next = FenceInteractionGeometry.KeepHeaderAccessible(FenceSnapping.Snap(next,
+                FenceInteractionGeometry.VisibleHeight(next, _gestureScale), _neighbours, _monitors, _gestureScale), _gestureScale, _monitors);
         next = FenceIconLayout.ConstrainResize(next, _original, _gesture, _metrics, _gestureScale);
         if (next != Fence) host.NotifyInteraction(new(next, InteractionPhase.Preview) { Hit = _gesture });
     }

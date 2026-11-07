@@ -67,6 +67,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(CanEdit));
                 ApplyCommand.NotifyCanExecuteChanged();
                 DeleteCommand.NotifyCanExecuteChanged();
+                SaveAutoSortCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -75,6 +76,10 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     public string Y { get => _y; set => SetProperty(ref _y, value); }
     public string Width { get => _width; set => SetProperty(ref _width, value); }
     public string Height { get => _height; set => SetProperty(ref _height, value); }
+    private string _autoSort = "";
+    /// <summary>File-name rules of the selected group, e.g. "*.png; *.lnk; Steam*".</summary>
+    public string AutoSort { get => _autoSort; set => SetProperty(ref _autoSort, value); }
+    public RelayCommand SaveAutoSortCommand { get; }
     public RelayCommand CreateCommand { get; }
     public RelayCommand ApplyCommand { get; }
     public RelayCommand DeleteCommand { get; }
@@ -95,6 +100,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         CreateCommand = new RelayCommand(Create, () => _canWrite && _interactionOriginal is null && _desktop?.IsPresentingTransition != true);
         ApplyCommand = new RelayCommand(Apply, () => CanEdit);
         DeleteCommand = new RelayCommand(Delete, () => CanEdit);
+        SaveAutoSortCommand = new RelayCommand(SaveAutoSort, () => CanEdit);
         ShowDesktopCommand = new RelayCommand(() => _desktop?.ShowDesktop(), () => _desktop?.Connection.Connected == true);
         var result = store.Load();
         _canWrite = result.CanWrite;
@@ -139,7 +145,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         try
         {
             replacement = new Fence(SelectedFence.Id, Name,
-                Parse(X, "X"), Parse(Y, "Y"), Parse(Width, "Ширина"), Parse(Height, "Высота"), SelectedFence.IsCollapsed, SelectedFence.Icons, SelectedFence.Appearance);
+                Parse(X, "X"), Parse(Y, "Y"), Parse(Width, "Ширина"), Parse(Height, "Высота"), SelectedFence.IsCollapsed, SelectedFence.Icons, SelectedFence.Appearance, SelectedFence.AutoSort);
             replacement = _desktop?.NormalizeFence(SelectedFence, replacement) ?? replacement;
         }
         catch (ArgumentException exception) { Error = exception.Message; return; }
@@ -150,6 +156,22 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         _fences[index] = replacement;
         SelectedFence = replacement;
         ResetEditor();
+    }
+
+    private void SaveAutoSort()
+    {
+        if (!FlushAppearanceChanges() || SelectedFence is null) return;
+        Fence replacement;
+        try { replacement = SelectedFence.WithAutoSort(FenceAutoSort.Parse(AutoSort)); }
+        catch (ArgumentException exception) { Error = exception.Message; return; }
+        var index = _fences.IndexOf(SelectedFence);
+        var snapshot = _fences.ToArray();
+        snapshot[index] = replacement;
+        if (!TrySave(snapshot)) return;
+        _fences[index] = replacement;
+        SelectedFence = replacement;
+        _desktop?.SetFences(_fences.ToArray());
+        Status = replacement.AutoSort.IsEmpty ? "Авто-сортировка выключена." : "Новые подходящие файлы будут попадать в эту группу.";
     }
 
     private void Delete()
@@ -274,12 +296,14 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         CreateCommand.NotifyCanExecuteChanged();
         ApplyCommand.NotifyCanExecuteChanged();
         DeleteCommand.NotifyCanExecuteChanged();
+        SaveAutoSortCommand.NotifyCanExecuteChanged();
     }
 
     private void ResetEditor()
     {
         AppearanceEditor.Load(SelectedFence);
         Name = SelectedFence?.Name ?? "";
+        AutoSort = FenceAutoSort.Format(SelectedFence?.AutoSort ?? []);
         X = Format(SelectedFence?.X ?? 0);
         Y = Format(SelectedFence?.Y ?? 0);
         Width = Format(SelectedFence?.Width ?? 300);

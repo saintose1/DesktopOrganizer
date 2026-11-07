@@ -116,6 +116,17 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         RequireHost();
         return DesktopDiagnostics.MonitorAreas();
     }
+    /// <summary>Visible bounds of every other Fence surface, for magnetic edges while one Fence is dragged.</summary>
+    internal IReadOnlyList<DesktopBounds> OtherFenceBounds(Guid id)
+    {
+        var result = new List<DesktopBounds>(_windows.Count);
+        foreach (var (key, surface) in _windows)
+        {
+            if (key == id || !Inputs.TryGetValue(surface.Frame, out var input) || input.Input.Fence is not { } fence) continue;
+            result.Add(new(fence.X, fence.Y, fence.Width, FenceInteractionGeometry.VisibleHeight(fence, input.Input.Scale)));
+        }
+        return result;
+    }
     public double GetScale(Fence fence)
     {
         nint monitor;

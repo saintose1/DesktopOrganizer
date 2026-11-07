@@ -38,3 +38,35 @@ public sealed class ItemConcealmentTests
         }
     }
 }
+
+public sealed class HiddenItemsRecoveryTests
+{
+    [Fact]
+    public void RestoreAllUnhidesJournaledItemsAndKeepsOnlyFailures()
+    {
+        var directory = Directory.CreateTempSubdirectory("DesktopOrganizer-recovery-").FullName;
+        var file = Path.Combine(directory, "item.lnk");
+        File.WriteAllText(file, "x");
+        File.SetAttributes(file, File.GetAttributes(file) | FileAttributes.Hidden);
+        var journal = Path.Combine(directory, HiddenItemsRecovery.JournalName);
+        File.WriteAllText(journal, System.Text.Json.JsonSerializer.Serialize(new[] { file, Path.Combine(directory, "gone.lnk") }));
+        try
+        {
+            var result = HiddenItemsRecovery.RestoreAll(directory);
+            Assert.Equal(1, result.Restored);
+            Assert.Equal(1, result.Missing);
+            Assert.Empty(result.Failed);
+            Assert.True((File.GetAttributes(file) & FileAttributes.Hidden) == 0);
+            Assert.Equal("[]", File.ReadAllText(journal));
+        }
+        finally { File.SetAttributes(file, FileAttributes.Normal); Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public void RestoreAllWithoutJournalDoesNothing()
+    {
+        var directory = Directory.CreateTempSubdirectory("DesktopOrganizer-recovery-").FullName;
+        try { Assert.Equal(0, HiddenItemsRecovery.RestoreAll(directory).Restored); }
+        finally { Directory.Delete(directory, true); }
+    }
+}

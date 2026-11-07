@@ -16,9 +16,11 @@ public sealed record Fence
     public bool IsCollapsed { get; private init; }
     public ImmutableArray<DesktopIconAssignment> Icons { get; private init; } = [];
     public FenceAppearance Appearance { get; private init; }
+    // File-name rules for new desktop items (see FenceAutoSort); empty for groups without rules.
+    public ImmutableArray<string> AutoSort { get; private init; } = [];
 
     public Fence(Guid id, string name, double x, double y, double width, double height, bool isCollapsed = false,
-        IEnumerable<DesktopIconAssignment>? icons = null, FenceAppearance? appearance = null)
+        IEnumerable<DesktopIconAssignment>? icons = null, FenceAppearance? appearance = null, IEnumerable<string>? autoSort = null)
     {
         if (id == Guid.Empty)
             throw new ArgumentException("Идентификатор группы не может быть пустым.", nameof(id));
@@ -35,6 +37,7 @@ public sealed record Fence
         IsCollapsed = isCollapsed;
         Appearance = appearance ?? FenceAppearance.Default;
         if (icons is not null) Icons = ValidateIcons(icons);
+        if (autoSort is not null) AutoSort = ValidateAutoSort(autoSort);
     }
 
     public Fence WithBounds(double x, double y, double width, double height)
@@ -45,7 +48,15 @@ public sealed record Fence
     public Fence ToggleCollapsed() => this with { IsCollapsed = !IsCollapsed };
     public Fence WithIcons(IEnumerable<DesktopIconAssignment> icons) => this with { Icons = ValidateIcons(icons) };
     public Fence WithPresentation(string name, FenceAppearance appearance) => new(Id, name, X, Y, Width, Height, IsCollapsed, Icons,
-        appearance ?? throw new ArgumentNullException(nameof(appearance)));
+        appearance ?? throw new ArgumentNullException(nameof(appearance)), AutoSort);
+    public Fence WithAutoSort(IEnumerable<string> patterns) => this with { AutoSort = ValidateAutoSort(patterns) };
+    private static ImmutableArray<string> ValidateAutoSort(IEnumerable<string> patterns)
+    {
+        var result = patterns.ToImmutableArray();
+        if (result.Length > Desktop.FenceAutoSort.MaxPatterns) throw new ArgumentException("Слишком много правил авто-сортировки.");
+        foreach (var pattern in result) Desktop.FenceAutoSort.Validate(pattern);
+        return result;
+    }
     private static void ValidateBounds(double x, double y, double width, double height)
     {
         if (!double.IsFinite(x) || !double.IsFinite(y)) throw new ArgumentException("Координаты должны быть конечными числами.");

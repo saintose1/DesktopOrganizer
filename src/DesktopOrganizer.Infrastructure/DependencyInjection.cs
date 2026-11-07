@@ -30,7 +30,7 @@ public static class DependencyInjection
             interactionTrace: p.GetRequiredService<ExplorerInteractionTrace>()));
         services.AddSingleton<DesktopOrganizer.Core.Desktop.IDesktopIconService>(p => new DesktopIconService(
             p.GetRequiredService<ILogger<DesktopIconService>>(), p.GetRequiredService<ILogger<DesktopDiscovery>>(),
-            p.GetRequiredService<ExplorerInteractionTrace>(), Path.Combine(storageDirectory, "hidden-icons.json")));
+            p.GetRequiredService<ExplorerInteractionTrace>(), Path.Combine(storageDirectory, HiddenItemsRecovery.JournalName)));
 
         services.AddSerilog((_, configuration) => configuration
             .MinimumLevel.Information()

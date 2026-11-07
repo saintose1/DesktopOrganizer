@@ -40,10 +40,25 @@ public partial class App : Application
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DesktopOrganizer"));
             var storageKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(dataDirectory.ToUpperInvariant())));
             _instanceMutex = new Mutex(true, $"Local\\DesktopOrganizer-{storageKey}", out _ownsMutex);
+            var restoreHidden = bool.TryParse(builder.Configuration["RestoreHidden"], out var restore) && restore;
+            var quiet = bool.TryParse(builder.Configuration["Quiet"], out var silent) && silent;
             if (!_ownsMutex)
             {
-                MessageBox.Show("DesktopOrganizer уже запущен для этой папки данных.", "DesktopOrganizer");
-                Shutdown();
+                if (!quiet) MessageBox.Show(restoreHidden
+                    ? "Сначала закройте DesktopOrganizer через трей → «Выход»: он сам вернёт скрытые ярлыки."
+                    : "DesktopOrganizer уже запущен для этой папки данных.", "DesktopOrganizer");
+                Shutdown(restoreHidden ? 2 : 0);
+                return;
+            }
+            if (restoreHidden)
+            {
+                // Recovery without Explorer automation: un-hide every journaled item and exit (used by the uninstaller).
+                var result = HiddenItemsRecovery.RestoreAll(dataDirectory);
+                if (!quiet) MessageBox.Show(result.Failed.Count == 0
+                    ? $"Скрытые ярлыки возвращены: {result.Restored}. Отсутствуют на диске: {result.Missing}."
+                    : $"Возвращено: {result.Restored}. Не удалось вернуть {result.Failed.Count}:\n{string.Join("\n", result.Failed.Take(10))}",
+                    "DesktopOrganizer");
+                Shutdown(result.Failed.Count == 0 ? 0 : 1);
                 return;
             }
             builder.Services.AddInfrastructure(dataDirectory);
@@ -51,7 +66,8 @@ public partial class App : Application
                 Path.Combine(AppContext.BaseDirectory, "DesktopOrganizer.App.exe"), provider.GetRequiredService<ILogger<WindowsStartupRegistration>>()));
             builder.Services.AddSingleton<SettingsViewModel>();
             builder.Services.AddSingleton<MainWindowViewModel>();
-            builder.Services.AddSingleton<MainWindow>();
+            builder.Services.AddTransient<MainWindow>(); // created on open, released on close-to-tray
+            builder.Services.AddSingleton<Func<MainWindow>>(provider => provider.GetRequiredService<MainWindow>);
             builder.Services.AddSingleton<FenceBitmapRenderer>();
             builder.Services.AddSingleton<DesktopIntegrationService>();
             builder.Services.AddSingleton(provider => new WindowsTrayIcon(provider.GetRequiredService<ILogger<WindowsTrayIcon>>(),
@@ -63,9 +79,9 @@ public partial class App : Application
             _logger = _host.Services.GetRequiredService<ILogger<App>>();
             await _host.StartAsync();
 
-            MainWindow = _host.Services.GetRequiredService<MainWindow>();
-            _host.Services.GetRequiredService<TrayApplicationService>().Start();
-            if (!bool.TryParse(builder.Configuration["StartInTray"], out var startInTray) || !startInTray) MainWindow.Show();
+            var tray = _host.Services.GetRequiredService<TrayApplicationService>();
+            tray.Start();
+            if (!bool.TryParse(builder.Configuration["StartInTray"], out var startInTray) || !startInTray) tray.ShowWindow();
             _host.Services.GetRequiredService<DesktopIntegrationService>().Start();
             _logger.LogInformation("DesktopOrganizer started");
         }

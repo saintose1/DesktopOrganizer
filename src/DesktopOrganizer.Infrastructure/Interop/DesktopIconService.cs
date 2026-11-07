@@ -570,7 +570,7 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
                     NotifyItem(0x1000, folder);
                 var started = System.Diagnostics.Stopwatch.GetTimestamp();
                 DesktopIconSnapshot? snapshot = null;
-                while (System.Diagnostics.Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(2))
+                while (System.Diagnostics.Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(4)) // a busy Explorer may need several seconds for a large group
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var read = Read(cancellationToken);
