@@ -12,14 +12,21 @@ public sealed record AppPreferences
     public double CollapseAnimationSeconds { get; }
     /// <summary>"ru", "en", or null to follow the Windows display language (files from older versions).</summary>
     public string? Language { get; }
+    public const string DarkTheme = "dark", LightTheme = "light";
+    /// <summary>"dark", "light", or null to follow the Windows app mode (files from older versions).</summary>
+    public string? Theme { get; }
+    /// <summary>Keep items of collapsed groups hidden while idle (no drop flash, slower expand). Off by default.</summary>
+    public bool ConcealCollapsedItems { get; }
     public AppPreferences(bool autoExpandOnHover = false, double expandAnimationSeconds = 0.18, double collapseAnimationSeconds = 0.14,
-        string? language = null)
+        string? language = null, string? theme = null, bool concealCollapsedItems = false)
     {
         ValidateSeconds(expandAnimationSeconds); ValidateSeconds(collapseAnimationSeconds);
         AutoExpandOnHover = autoExpandOnHover;
         ExpandAnimationSeconds = expandAnimationSeconds;
         CollapseAnimationSeconds = collapseAnimationSeconds;
         Language = language is Texts.Russian or Texts.English ? language : null;
+        Theme = theme is DarkTheme or LightTheme ? theme : null;
+        ConcealCollapsedItems = concealCollapsedItems;
     }
     private static void ValidateSeconds(double seconds)
     {

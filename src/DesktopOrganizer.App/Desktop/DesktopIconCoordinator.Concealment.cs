@@ -39,12 +39,40 @@ public sealed partial class DesktopIconCoordinator
             _logger.LogInformation("Returned {Count} hidden items that no longer belong to a collapsed group", reveal.Length);
         }
         if (Busy()) return;
+        if (!ConcealmentPolicy.HideWhenIdle(_concealWhenIdle))
+        {
+            await ReturnToParkingAsync(concealed, collapsed);
+            return;
+        }
         // While the pointer works with the Fence row, hiding makes Explorer re-enumerate for about a second and
         // the next expand/collapse frames would wait for it. Hide once the pointer has left all groups.
         if (_approachedAt.Values.Any(at => Stopwatch.GetElapsedTime(at) < ApproachLease)) return;
         var conceal = collapsed.Where(id => !concealed.Contains(id) && !approached.Contains(id) &&
             _matched.TryGetValue(id, out var icon) && !OnMonitors(icon)).ToArray();
         if (conceal.Length != 0) await _concealment.ConcealAsync(conceal, _shutdown.Token);
+    }
+    /// <summary>
+    /// Instant-expand mode: items hidden for a drag return to their parking slots (still offscreen) once the desktop
+    /// has been quiet, so the next expand animates them with the Fence instead of waiting ~0.6 s for Explorer.
+    /// </summary>
+    private async Task ReturnToParkingAsync(HashSet<string> concealed, HashSet<string> collapsed)
+    {
+        var hidden = concealed.Where(collapsed.Contains).ToHashSet(FenceIconLayout.IdentityComparer);
+        if (hidden.Count == 0) return;
+        var quiet = _lastGestureEnd == 0 ? TimeSpan.MaxValue : Stopwatch.GetElapsedTime(_lastGestureEnd);
+        if (!ConcealmentPolicy.ReturnToParking(false, ExplorerBusy(), quiet))
+        {
+            if (!_quietReturn.IsEnabled) _quietReturn.Start();
+            return;
+        }
+        var parking = IconPlacement.Targets(_fences, _monitors, Metrics).Where(t => hidden.Contains(t.StableId))
+            .Select(t => (t.StableId, (DesktopPoint?)t.Position)).ToArray();
+        if (parking.Length == 0) return;
+        _host.Trace.Mark("Reveal.parking", parking.Length);
+        await _concealment!.RevealAsync(parking);
+        var snapshot = await _icons.ReadAsync(_shutdown.Token);
+        if (snapshot.Connected && snapshot.Error is null) ApplySnapshot(snapshot);
+        _logger.LogInformation("Returned {Count} hidden items to parking for instant expand", parking.Length);
     }
     private async Task ConcealParkedNowAsync()
     {

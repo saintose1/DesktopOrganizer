@@ -1,17 +1,21 @@
 # Branding
 
-- `dog-original.png`: неизменённый пользовательский branding PNG.
-- `application.ico`: EXE, окно и taskbar; восемь PNG frames внутри ICO.
-- `tray.ico`: упрощённая собака, прозрачный фон, без зерна и мелких рамок.
-- `tray-preview.png`: увеличенное превью упрощённого знака.
+Знак «Лесного» интерфейса (0.4.0) — векторный лист папоротника.
 
-Оба ICO: 16/20/24/32/48/64/128/256px, 32-bit alpha. Генерация из корня:
+- `application.ico`: лист на тёмно-моховой плитке. EXE, окно, панель задач, ярлык на рабочем столе и установщик.
+- `tray.ico`: только лист, без плитки, средне-зелёный — читается на светлой и тёмной панели задач.
+  На 16–24 px меньше листочков, но они крупнее и шире.
+- `application-preview.png`, `tray-preview.png`: превью 256 и 64 px.
+- `dog-original.png`: прежний пользовательский знак, сохранён как исходник; в сборку больше не входит.
+
+Оба ICO: 16/20/24/32/48/64/128/256 px, 32-bit alpha. Генерация из корня:
 
 ```powershell
 dotnet run --project tools/DesktopOrganizer.Branding
 ```
 
-Pipeline использует WPF bitmap encoder и векторные формы для малой tray icon.
+Pipeline рисует знак векторно в WPF (`DrawingContext`) и сохраняет PNG frames внутри ICO.
 ApplicationIcon в csproj встраивает ICO в EXE; Window.Icon — WPF resource.
 Tray ICO копируется в output/publish, загружается LoadImage и освобождается
-DestroyIcon при выходе. Содержимое Explorer icons не относится к этому pipeline.
+DestroyIcon при выходе. Если Windows показывает на ярлыке старый значок, это кеш значков
+Проводника: он обновится сам или после `ie4uinit.exe -show`.

@@ -1,5 +1,6 @@
 using DesktopOrganizer.Core.Localization;
 using DesktopOrganizer.App.Commands;
+using DesktopOrganizer.App.Themes;
 using DesktopOrganizer.Infrastructure.Settings;
 using Microsoft.Extensions.Logging;
 
@@ -18,7 +19,7 @@ public sealed class SettingsViewModel : ObservableObject
         set
         {
             if (value == AutoExpandOnHover) return;
-            try { SavePreferences(new(value, ExpandAnimationSeconds, CollapseAnimationSeconds, _currentPreferences.Language)); }
+            try { SavePreferences(new(value, ExpandAnimationSeconds, CollapseAnimationSeconds, _currentPreferences.Language, _currentPreferences.Theme, _currentPreferences.ConcealCollapsedItems)); }
             catch (Exception error) { ReportPreferences(error); }
             OnPropertyChanged();
         }
@@ -29,7 +30,7 @@ public sealed class SettingsViewModel : ObservableObject
         set
         {
             if (value == ExpandAnimationSeconds) return;
-            try { SavePreferences(new(AutoExpandOnHover, value, CollapseAnimationSeconds, _currentPreferences.Language)); }
+            try { SavePreferences(new(AutoExpandOnHover, value, CollapseAnimationSeconds, _currentPreferences.Language, _currentPreferences.Theme, _currentPreferences.ConcealCollapsedItems)); }
             catch (Exception error) { ReportPreferences(error); }
             OnPropertyChanged();
         }
@@ -40,17 +41,40 @@ public sealed class SettingsViewModel : ObservableObject
         set
         {
             if (value == CollapseAnimationSeconds) return;
-            try { SavePreferences(new(AutoExpandOnHover, ExpandAnimationSeconds, value, _currentPreferences.Language)); }
+            try { SavePreferences(new(AutoExpandOnHover, ExpandAnimationSeconds, value, _currentPreferences.Language, _currentPreferences.Theme, _currentPreferences.ConcealCollapsedItems)); }
             catch (Exception error) { ReportPreferences(error); }
             OnPropertyChanged();
         }
     }
     public bool IsRussian { get => Texts.Language == Texts.Russian; set { if (value) SetLanguage(Texts.Russian); } }
     public bool IsEnglish { get => Texts.Language == Texts.English; set { if (value) SetLanguage(Texts.English); } }
+    /// <summary>Keep items of collapsed groups hidden while idle; off = instant expand (see ConcealmentPolicy).</summary>
+    public bool ConcealCollapsedItems
+    {
+        get => _currentPreferences.ConcealCollapsedItems;
+        set
+        {
+            if (value == ConcealCollapsedItems) return;
+            try { SavePreferences(new(AutoExpandOnHover, ExpandAnimationSeconds, CollapseAnimationSeconds, _currentPreferences.Language, _currentPreferences.Theme, value)); }
+            catch (Exception error) { ReportPreferences(error); }
+            OnPropertyChanged();
+        }
+    }
+    public bool IsThemeSystem { get => _currentPreferences.Theme is null; set { if (value) SetTheme(null); } }
+    public bool IsThemeLight { get => _currentPreferences.Theme == AppPreferences.LightTheme; set { if (value) SetTheme(AppPreferences.LightTheme); } }
+    public bool IsThemeDark { get => _currentPreferences.Theme == AppPreferences.DarkTheme; set { if (value) SetTheme(AppPreferences.DarkTheme); } }
+    private void SetTheme(string? theme)
+    {
+        if (_currentPreferences.Theme == theme) return;
+        try { SavePreferences(new(AutoExpandOnHover, ExpandAnimationSeconds, CollapseAnimationSeconds, _currentPreferences.Language, theme, _currentPreferences.ConcealCollapsedItems)); }
+        catch (Exception error) { ReportPreferences(error); }
+        ThemeManager.Apply(_currentPreferences.Theme);
+        OnPropertyChanged(nameof(IsThemeSystem)); OnPropertyChanged(nameof(IsThemeLight)); OnPropertyChanged(nameof(IsThemeDark));
+    }
     private void SetLanguage(string language)
     {
         if (Texts.Language == language && _currentPreferences.Language == language) return;
-        try { SavePreferences(new(AutoExpandOnHover, ExpandAnimationSeconds, CollapseAnimationSeconds, language)); }
+        try { SavePreferences(new(AutoExpandOnHover, ExpandAnimationSeconds, CollapseAnimationSeconds, language, _currentPreferences.Theme, _currentPreferences.ConcealCollapsedItems)); }
         catch (Exception error) { ReportPreferences(error); }
         Texts.SetLanguage(language); // the window, tray menu and new messages switch at once
         OnPropertyChanged(nameof(IsRussian)); OnPropertyChanged(nameof(IsEnglish));
@@ -89,6 +113,8 @@ public sealed class SettingsViewModel : ObservableObject
             OnPropertyChanged(nameof(AutoExpandOnHover));
             OnPropertyChanged(nameof(ExpandAnimationSeconds));
             OnPropertyChanged(nameof(CollapseAnimationSeconds));
+            OnPropertyChanged(nameof(IsThemeSystem)); OnPropertyChanged(nameof(IsThemeLight)); OnPropertyChanged(nameof(IsThemeDark));
+            OnPropertyChanged(nameof(ConcealCollapsedItems));
         }
         catch (Exception error) { ReportPreferences(error); }
     }

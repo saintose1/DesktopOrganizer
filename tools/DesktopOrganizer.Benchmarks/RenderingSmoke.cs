@@ -21,7 +21,8 @@ internal static class RenderingSmoke
     public static int Run(bool showDesktop = true)
     {
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown }; var result = 1;
-        app.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/DesktopOrganizer.App;component/Themes/LavenderHud.xaml", UriKind.Relative) });
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/DesktopOrganizer.App;component/Themes/ForestDark.xaml", UriKind.Relative) });
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/DesktopOrganizer.App;component/Themes/ForestControls.xaml", UriKind.Relative) });
         app.Dispatcher.InvokeAsync(async () =>
         {
             try { await Scenario(showDesktop); result = 0; }

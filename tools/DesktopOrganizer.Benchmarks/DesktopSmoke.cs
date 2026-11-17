@@ -19,7 +19,8 @@ internal static class DesktopSmoke
     public static int Run()
     {
         var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-        application.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/DesktopOrganizer.App;component/Themes/LavenderHud.xaml", UriKind.Relative) });
+        application.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/DesktopOrganizer.App;component/Themes/ForestDark.xaml", UriKind.Relative) });
+        application.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/DesktopOrganizer.App;component/Themes/ForestControls.xaml", UriKind.Relative) });
         var exit = 1;
         application.Dispatcher.InvokeAsync(async () =>
         {

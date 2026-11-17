@@ -33,8 +33,13 @@ Windows-приложение для организации настоящих з
   независимые цвета/прозрачность header, body и border, live preview и color picker.
 - Длительности collapse/expand в Settings. Fence и значки используют общий animation
   progress; пользовательские данные не записываются на каждом кадре.
-- UI **Lavender HUD**: страницы Fences и Settings, тёмная фиолетовая палитра,
-  dog branding, компактная панель кастомизации.
+- UI **Forest** (0.4.0): страницы «Обзор», «Группы», «Правила», «Настройки»; тёмная и светлая темы
+  (переключение в Настройках, по умолчанию как в Windows); баннер и мшистые значки категорий.
+  Подробнее: [docs/UI-FOREST.md](docs/UI-FOREST.md).
+- Страница «Правила»: все маски авто-сортировки списком, добавление/удаление и предпросмотр совпадений на рабочем столе.
+- Кнопка «Лесной стиль» в редакторе группы применяет тёмно-зелёный вид к выбранной группе.
+- Мгновенное раскрытие свёрнутых групп: значки прячутся атрибутом Hidden только на время перетаскивания на рабочем столе.
+  Прежний режим (всегда скрыты, без вспышек при drop из других окон) — в Настройках.
 - Трей: крестик скрывает окно, один клик показывает его. «Выход» сохраняет состояние,
   возвращает временно скрытые значки и корректно освобождает ресурсы.
 - Autostart для текущего пользователя через HKCU Run, без прав администратора.
@@ -153,7 +158,7 @@ Disconnected. Shell API не гарантирует атомарный composito
 - `pre-ui-redesign-stable` — сохранённая точка возврата до редизайна интерфейса.
 - `pre-explorer-stabilization-20261013` — локальная точка возврата перед исправлением
   wallpaper composition, удаления элементов и изоляции desktop drag.
-- [Roadmap](ROADMAP.md), [UI implementation](docs/UI-DESIGN-MAGICPATH.md),
+- [Roadmap](ROADMAP.md), [Forest UI](docs/UI-FOREST.md), [прежний UI Lavender HUD](docs/UI-DESIGN-MAGICPATH.md),
   [animation pipeline / checklist](docs/FENCE-ANIMATION-PIPELINE.md),
   [tray lifecycle](docs/MILESTONE-TRAY.md), [Explorer rendering](docs/MILESTONE-RENDERING.md).
 

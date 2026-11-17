@@ -120,8 +120,8 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
             _owner._worker.Run(() =>
             {
                 Validate(); cancellationToken.ThrowIfCancellationRequested();
-                var batch = Matches(_initial, targets) ? _initial : Matches(_final, targets) ? _final :
-                    throw new InvalidOperationException("Animation identities changed during a frame.");
+                // The coordinator sends only the items that moved this frame: a subset of the prepared identities.
+                var batch = Matches(_initial, targets) ? _initial : Matches(_final, targets) ? _final : Subset(targets);
                 for (var i = 0; i < targets.Count; i++)
                 {
                     var point = _coordinates.ToView(targets[i].Position);
@@ -168,6 +168,17 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
             finally { _pendingRedraw = false; _disposed = true; FreeClones(); _owner._animations.Remove(this); }
         }
         private void FreeClones() { foreach (var clone in _clones.Values) Marshal.FreeCoTaskMem(clone); _clones.Clear(); }
+        private Batch Subset(IReadOnlyList<DesktopIconTarget> targets)
+        {
+            var batch = new Batch(targets.Count);
+            for (var i = 0; i < targets.Count; i++)
+            {
+                if (!_clones.TryGetValue(targets[i].StableId, out var clone))
+                    throw new InvalidOperationException("Animation identities changed during a frame.");
+                batch.Ids[i] = targets[i].StableId; batch.Pidls[i] = clone;
+            }
+            return batch;
+        }
         private static bool Matches(Batch batch, IReadOnlyList<DesktopIconTarget> targets)
         {
             if (batch.Ids.Length != targets.Count) return false;

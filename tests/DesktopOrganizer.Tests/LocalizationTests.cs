@@ -4,6 +4,7 @@ using DesktopOrganizer.Core.Localization;
 
 namespace DesktopOrganizer.Tests;
 
+[Collection("Interface language")]
 public sealed partial class LocalizationTests
 {
     private static string Root()

@@ -2,83 +2,72 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-        <StackPanel>
-            <TextBlock Text="{l:Tr '01 / РАБОЧИЙ СТОЛ'}" Style="{StaticResource Caption}" />
-            <TextBlock Text="{l:Tr 'Группы рабочего стола'}" FontSize="29" FontWeight="SemiBold" />
-            <TextBlock Text="{l:Tr 'Всё важное — на своём месте.'}" Foreground="{StaticResource Muted}" Margin="0,8,0,26" />
-        </StackPanel>
-        <DockPanel Grid.Row="1" Margin="0,0,0,20">
+        <DockPanel Margin="0,0,0,16">
             <Button DockPanel.Dock="Right" Content="{l:Tr '＋  Новая группа'}" Command="{Binding CreateCommand}" Style="{StaticResource Primary}" AutomationProperties.AutomationId="CreateFence" />
-            <TextBlock VerticalAlignment="Center" Foreground="{StaticResource Muted}">
-                <Run Text="{l:Tr 'Групп: '}" />
-                <Run Text="{Binding Fences.Count, Mode=OneWay}" />
-            </TextBlock>
+            <TextBlock Text="{l:Tr 'Группы'}" Style="{StaticResource PageTitle}" VerticalAlignment="Center" />
         </DockPanel>
-        <Grid Grid.Row="2">
+        <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="0.85*" MinWidth="240" />
-                <ColumnDefinition Width="20" />
-                <ColumnDefinition Width="1.15*" />
+                <ColumnDefinition Width="280" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" MinWidth="360" />
             </Grid.ColumnDefinitions>
-            <Grid>
-                <TextBlock Text="{l:Tr 'Пока здесь пусто.&#xA;Создайте первую группу.'}" TextWrapping="Wrap" Margin="16,30">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding Fences.Count}" Value="0">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
-                <ListBox ItemsSource="{Binding Fences}" SelectedItem="{Binding SelectedFence}" AutomationProperties.AutomationId="FenceList">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <StackPanel>
-                                <TextBlock Text="▱" Foreground="{StaticResource Accent}" FontSize="24" />
-                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="17" TextWrapping="Wrap" Margin="0,8,0,8" />
-                                <TextBlock Foreground="{StaticResource Muted}" FontSize="12">
-                                    <Run Text="{l:Tr 'Значков: '}" />
-                                    <Run Text="{Binding Icons.Length, Mode=OneWay}" />
-                                </TextBlock>
-                                <TextBlock Foreground="{StaticResource Muted}" FontSize="12" Margin="0,4,0,0">
-                                    <Run Text="{Binding Width, Mode=OneWay}" />
-                                    <Run Text=" × " />
-                                    <Run Text="{Binding Height, Mode=OneWay}" />
-                                </TextBlock>
-                                <TextBlock Foreground="{StaticResource Accent}" FontSize="11" Margin="0,8,0,0">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock">
-                                            <Setter Property="Text" Value="{l:Tr 'РАЗВЁРНУТА'}" />
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding IsCollapsed}" Value="True">
-                                                    <Setter Property="Text" Value="{l:Tr 'СВЁРНУТА'}" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
-                            </StackPanel>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
-            </Grid>
+            <Border Style="{StaticResource Card}" Padding="0,16,0,12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="{l:Tr 'Список групп'}" Style="{StaticResource SectionTitle}" Margin="18,0,18,10" />
+                    <Grid Grid.Row="1">
+                        <TextBlock Text="{l:Tr 'Пока здесь пусто.&#xA;Создайте первую группу.'}" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="18,12">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Fences.Count}" Value="0">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <ListBox ItemsSource="{Binding Fences}" SelectedItem="{Binding SelectedFence}" AutomationProperties.AutomationId="FenceList">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <DockPanel>
+                                        <Image DockPanel.Dock="Left" Source="/DesktopOrganizer.App;component/Assets/Forest/icon-folder.png" Width="34" Height="34" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality" />
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Name}" FontSize="15" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,2,0,0">
+                                                <Run Text="{l:Tr 'Значков: '}" />
+                                                <Run Text="{Binding Icons.Length, Mode=OneWay}" />
+                                                <Run Text="  ·  " />
+                                                <Run Text="{Binding Width, Mode=OneWay}" />
+                                                <Run Text=" × " />
+                                                <Run Text="{Binding Height, Mode=OneWay}" />
+                                            </TextBlock>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Grid>
+            </Border>
             <Border Grid.Column="2" Style="{StaticResource Card}">
                 <views:FenceAppearanceView />
             </Border>
         </Grid>
-        <StackPanel Grid.Row="3" Margin="0,18,0,0">
-            <TextBlock Text="{Binding LoadWarning}" Foreground="#E5CAA0" TextWrapping="Wrap" Visibility="{Binding HasLoadWarning, Converter={StaticResource BoolToVisibility}}" />
-            <TextBlock Text="{Binding Error}" Foreground="#FFA9B9" TextWrapping="Wrap" Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
-            <DockPanel Margin="0,8,0,0">
-                <Button DockPanel.Dock="Right" Content="{l:Tr 'К рабочему столу ↗'}" Command="{Binding ShowDesktopCommand}" AutomationProperties.AutomationId="ShowDesktop" Padding="10,6" />
-                <TextBlock Text="{Binding Status}" FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0" />
+        <StackPanel Grid.Row="2" Margin="0,12,0,14">
+            <TextBlock Text="{Binding LoadWarning}" Foreground="{DynamicResource Warning}" TextWrapping="Wrap" Visibility="{Binding HasLoadWarning, Converter={StaticResource BoolToVisibility}}" />
+            <TextBlock Text="{Binding Error}" Foreground="{DynamicResource Danger}" TextWrapping="Wrap" Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+            <DockPanel Margin="0,6,0,0">
+                <Button DockPanel.Dock="Right" Content="{l:Tr 'К рабочему столу ↗'}" Command="{Binding ShowDesktopCommand}" AutomationProperties.AutomationId="ShowDesktop" Padding="12,6" />
+                <TextBlock Text="{Binding Status}" FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0" />
             </DockPanel>
         </StackPanel>
     </Grid>

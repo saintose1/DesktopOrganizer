@@ -105,8 +105,10 @@ public sealed class FenceTransitionAnimator(ICompositionFrameClock? clock = null
     {
         if (!double.IsFinite(progress)) throw new ArgumentException("Invalid animation progress.", nameof(progress));
         var t = Math.Clamp(progress, 0, 1);
-        // Opening decelerates smoothly; closing starts/ends softly without bounce.
-        return expanding ? 1 - Math.Pow(1 - t, 3) : t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
+        // Both directions respond at once and settle softly, without bounce. Opening: cubic ease-out.
+        // Closing used ease-in-out, which barely moved in its first quarter and read as a delay; a quadratic
+        // ease-out starts immediately but is gentler than opening, so items leave the content steadily.
+        return expanding ? 1 - Math.Pow(1 - t, 3) : 1 - (1 - t) * (1 - t);
     }
     public void Dispose()
     {

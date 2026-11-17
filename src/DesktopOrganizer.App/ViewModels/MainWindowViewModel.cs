@@ -10,7 +10,7 @@ using System.Windows.Threading;
 
 namespace DesktopOrganizer.App.ViewModels;
 
-public sealed class MainWindowViewModel : ObservableObject, IDisposable
+public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 {
     private readonly IFenceStore _store;
     private readonly ILogger<MainWindowViewModel> _logger;
@@ -22,15 +22,31 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IDesktopIntegration? _desktop;
     private Fence? _interactionOriginal;
     private bool _updatingFromDesktop;
-    private bool _isSettingsPage;
+    private AppPage _page = AppPage.Overview;
     private Fence? _appearanceOriginal;
     private readonly DispatcherTimer _appearanceSaveTimer;
     public FenceAppearanceViewModel AppearanceEditor { get; }
     public SettingsViewModel? Settings { get; }
-    public bool IsSettingsPage { get => _isSettingsPage; private set { if (SetProperty(ref _isSettingsPage, value)) OnPropertyChanged(nameof(IsFencesPage)); } }
-    public bool IsFencesPage => !IsSettingsPage;
+    public AppPage Page
+    {
+        get => _page;
+        private set
+        {
+            if (!SetProperty(ref _page, value)) return;
+            OnPropertyChanged(nameof(IsOverviewPage)); OnPropertyChanged(nameof(IsFencesPage));
+            OnPropertyChanged(nameof(IsRulesPage)); OnPropertyChanged(nameof(IsSettingsPage));
+        }
+    }
+    public bool IsOverviewPage => Page == AppPage.Overview;
+    public bool IsFencesPage => Page == AppPage.Fences;
+    public bool IsRulesPage => Page == AppPage.Rules;
+    public bool IsSettingsPage => Page == AppPage.Settings;
+    public RelayCommand OpenOverviewCommand { get; }
     public RelayCommand OpenFencesCommand { get; }
+    public RelayCommand OpenRulesCommand { get; }
     public RelayCommand OpenSettingsCommand { get; }
+    /// <summary>Opens the Groups page with the group from an Overview card selected.</summary>
+    public ParameterCommand OpenFenceCommand { get; }
     public string ConnectionLabel => _desktop?.Connection.Connected == true ? Texts.T("Рабочий стол подключён") : Texts.T("Подключение к рабочему столу…");
     public bool IsDesktopConnected => _desktop?.Connection.Connected == true;
 
@@ -95,13 +111,24 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         {
             OnPropertyChanged(nameof(Title)); OnPropertyChanged(nameof(ConnectionLabel)); OnPropertyChanged(nameof(IconStatus));
             Status = ""; // earlier status lines were in the previous language
+            if (IsOverviewPage) RefreshOverview();
+            if (IsRulesPage) RefreshRules();
         };
         AppearanceEditor = new FenceAppearanceViewModel(PreviewAppearance);
         _appearanceSaveTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(650) };
         _appearanceSaveTimer.Tick += OnAppearanceSaveTick;
         Settings = settings;
-        OpenFencesCommand = new(() => IsSettingsPage = false);
-        OpenSettingsCommand = new(() => { Settings?.Refresh(); IsSettingsPage = true; });
+        OpenOverviewCommand = new(() => { Page = AppPage.Overview; RefreshOverview(); });
+        OpenFencesCommand = new(() => Page = AppPage.Fences);
+        OpenRulesCommand = new(() => { Page = AppPage.Rules; RefreshRules(); });
+        OpenSettingsCommand = new(() => { Settings?.Refresh(); Page = AppPage.Settings; });
+        OpenFenceCommand = new(parameter =>
+        {
+            if (parameter is Guid id && _fences.FirstOrDefault(f => f.Id == id) is { } fence) SelectedFence = fence;
+            Page = AppPage.Fences;
+        });
+        AddRuleCommand = new(AddRule, () => CanEditRules);
+        RemoveRuleCommand = new(RemoveRule, parameter => CanEditRules && parameter is RuleRow);
         Fences = new ReadOnlyObservableCollection<Fence>(_fences);
         CreateCommand = new RelayCommand(Create, () => _canWrite && _interactionOriginal is null && _desktop?.IsPresentingTransition != true);
         ApplyCommand = new RelayCommand(Apply, () => CanEdit);
@@ -114,7 +141,12 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         LoadWarning = result.Warning;
         foreach (var fence in result.Fences) _fences.Add(fence);
         _desktop?.SetFences(_fences.ToArray());
-        _fences.CollectionChanged += (_, _) => { if (!_updatingFromDesktop) _desktop?.SetFences(_fences.ToArray()); };
+        _fences.CollectionChanged += (_, _) =>
+        {
+            if (!_updatingFromDesktop) _desktop?.SetFences(_fences.ToArray());
+            if (IsOverviewPage) RefreshOverview();
+            if (IsRulesPage) RefreshRules();
+        };
         if (_desktop is not null) _desktop.ConnectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(DesktopStatus));
@@ -128,6 +160,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         if (_desktop is not null) _desktop.Interaction += OnDesktopInteraction;
         if (_desktop is not null) _desktop.StateChangeRequested += OnDesktopStateChange;
         SelectedFence = _fences.FirstOrDefault();
+        RefreshOverview();
         Status = Texts.F("Загружено групп: {0}. Изменения сохраняются автоматически.", _fences.Count);
         logger.LogInformation("Main window initialized with {Count} groups", _fences.Count);
     }
@@ -167,17 +200,25 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
     private void SaveAutoSort()
     {
         if (!FlushAppearanceChanges() || SelectedFence is null) return;
-        Fence replacement;
-        try { replacement = SelectedFence.WithAutoSort(FenceAutoSort.Parse(AutoSort)); }
-        catch (ArgumentException exception) { Error = exception.Message; return; }
-        var index = _fences.IndexOf(SelectedFence);
+        try { ApplyAutoSort(SelectedFence, FenceAutoSort.Parse(AutoSort)); }
+        catch (ArgumentException exception) { Error = exception.Message; }
+    }
+
+    /// <summary>Replaces the auto-sort masks of one group: save first, then update the model (see AGENTS.md).</summary>
+    private bool ApplyAutoSort(Fence target, IReadOnlyList<string> patterns)
+    {
+        var index = _fences.IndexOf(target);
+        if (index < 0) return false;
+        var replacement = target.WithAutoSort(patterns);
         var snapshot = _fences.ToArray();
         snapshot[index] = replacement;
-        if (!TrySave(snapshot)) return;
+        if (!TrySave(snapshot)) return false;
+        var wasSelected = SelectedFence?.Id == target.Id;
         _fences[index] = replacement;
-        SelectedFence = replacement;
+        if (wasSelected) SelectedFence = replacement;
         _desktop?.SetFences(_fences.ToArray());
         Status = replacement.AutoSort.IsEmpty ? Texts.T("Авто-сортировка выключена.") : Texts.T("Новые подходящие файлы будут попадать в эту группу.");
+        return true;
     }
 
     private void Delete()
@@ -303,6 +344,7 @@ public sealed class MainWindowViewModel : ObservableObject, IDisposable
         ApplyCommand.NotifyCanExecuteChanged();
         DeleteCommand.NotifyCanExecuteChanged();
         SaveAutoSortCommand.NotifyCanExecuteChanged();
+        NotifyRuleCommands();
     }
 
     private void ResetEditor()

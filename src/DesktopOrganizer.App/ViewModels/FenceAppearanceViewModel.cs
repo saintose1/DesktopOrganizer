@@ -1,3 +1,4 @@
+using DesktopOrganizer.App.Commands;
 using DesktopOrganizer.Core.Localization;
 using System.Globalization;
 using System.Windows.Media;
@@ -16,6 +17,8 @@ public sealed class FenceAppearanceViewModel(Action<string, FenceAppearance> pre
     private double _headerOpacity = 100, _bodyOpacity = FenceAppearance.Default.BodyOpacity, _borderOpacity = 100;
     private static readonly IReadOnlyList<string> InstalledFonts = Fonts.SystemFontFamilies.Select(f => f.Source).Order(StringComparer.CurrentCultureIgnoreCase).ToArray();
     public IReadOnlyList<string> FontFamilies => InstalledFonts.Append(FontFamily).Distinct(StringComparer.CurrentCultureIgnoreCase).Order(StringComparer.CurrentCultureIgnoreCase).ToArray();
+    private RelayCommand? _forestPreset;
+    public RelayCommand ForestPresetCommand => _forestPreset ??= new(ApplyForestPreset);
     public IReadOnlyList<FenceTitleAlignment> Alignments { get; } = Enum.GetValues<FenceTitleAlignment>();
     public string Error { get => _error; private set { if (SetProperty(ref _error, value)) OnPropertyChanged(nameof(HasError)); } }
     public bool HasError => Error.Length > 0;
@@ -32,6 +35,21 @@ public sealed class FenceAppearanceViewModel(Action<string, FenceAppearance> pre
     public double HeaderOpacity { get => _headerOpacity; set { if (SetProperty(ref _headerOpacity, value)) Update(); } }
     public double BodyOpacity { get => _bodyOpacity; set { if (SetProperty(ref _bodyOpacity, value)) Update(); } }
     public double BorderOpacity { get => _borderOpacity; set { if (SetProperty(ref _borderOpacity, value)) Update(); } }
+    /// <summary>Applies the Forest look to the selected group: serif title, dark moss panel, sage border.</summary>
+    private void ApplyForestPreset()
+    {
+        _loading = true;
+        try
+        {
+            _fontFamily = InstalledFonts.Contains("Noto Serif", StringComparer.CurrentCultureIgnoreCase) ? "Noto Serif" : "Georgia";
+            _fontSize = "18"; _bold = true; _italic = false; _alignment = FenceTitleAlignment.Left;
+            _textColor = "#E4E6D3"; _headerColor = "#14221A"; _headerOpacity = 92;
+            _bodyColor = "#14221A"; _bodyOpacity = 85; _borderColor = "#86A35F"; _borderOpacity = 60; _error = "";
+            OnPropertyChanged(string.Empty);
+        }
+        finally { _loading = false; }
+        Update();
+    }
     public string TextPreview => PreviewColor(TextColor);
     public string HeaderPreview => PreviewColor(HeaderColor);
     public string BodyPreview => PreviewColor(BodyColor);

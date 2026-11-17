@@ -26,8 +26,9 @@ public sealed class FenceAnimationTests
             Assert.True(to > from ? height >= previous : height <= previous);
             previous = height;
         }
+        // Both directions respond on the first frame (0.4.0: a slow collapse start read as a delay).
         var startDistance = Math.Abs(FenceTransitionAnimator.HeightAt(from, to, 0.01) - from);
-        Assert.True(to > from ? startDistance > Math.Abs(to - from) * 0.01 : startDistance < Math.Abs(to - from) * 0.01);
+        Assert.True(startDistance > Math.Abs(to - from) * 0.01);
         Assert.True(Math.Abs(to - FenceTransitionAnimator.HeightAt(from, to, 0.99)) < Math.Abs(to - from) * 0.01);
     }
     [Theory]

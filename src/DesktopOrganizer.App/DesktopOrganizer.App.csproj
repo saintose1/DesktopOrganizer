@@ -12,8 +12,9 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
   </ItemGroup>
   <ItemGroup>
-    <Resource Include="Assets/Branding/dog-original.png" />
     <Resource Include="Assets/Branding/application.ico" />
+    <Resource Include="Assets/Forest/**/*.png" />
+    <Resource Include="Assets/Forest/**/*.jpg" />
     <Content Include="Assets/Branding/tray.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

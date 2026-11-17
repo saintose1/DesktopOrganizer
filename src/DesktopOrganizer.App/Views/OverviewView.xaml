@@ -1,0 +1,114 @@
+<UserControl xmlns:l="clr-namespace:DesktopOrganizer.App.Views" xmlns:views="clr-namespace:DesktopOrganizer.App.Views" x:Class="DesktopOrganizer.App.Views.OverviewView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <Style x:Key="GroupCard" TargetType="Border" BasedOn="{StaticResource Card}">
+            <Setter Property="Margin" Value="0,0,14,14" />
+            <Setter Property="Padding" Value="18,14,18,12" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="views:Motion.Lift" Value="True" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource PanelHover}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource Accent}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <DockPanel Margin="0,0,0,16">
+            <Button DockPanel.Dock="Right" Content="{l:Tr '＋  Новая группа'}" Command="{Binding CreateCommand}" Click="OnCreate" Style="{StaticResource Primary}" Margin="12,0,0,0" AutomationProperties.AutomationId="OverviewCreateFence" />
+            <Grid DockPanel.Dock="Right" Width="260">
+                <TextBox x:Name="SearchBox" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0" Padding="34,0,10,0" AutomationProperties.Name="{l:Tr 'Поиск'}" AutomationProperties.AutomationId="OverviewSearch" />
+                <TextBlock Text="&#xE721;" FontFamily="{StaticResource IconFont}" FontSize="14" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="12,0,0,0" IsHitTestVisible="False" />
+                <TextBlock Text="{l:Tr 'Поиск'}" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="36,0,0,0" IsHitTestVisible="False">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Text, ElementName=SearchBox}" Value="">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Grid>
+            <TextBlock Text="{l:Tr 'Обзор'}" Style="{StaticResource PageTitle}" VerticalAlignment="Center" />
+        </DockPanel>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel>
+                <Grid Height="150" ClipToBounds="True">
+                    <Image Source="/DesktopOrganizer.App;component/Assets/Forest/banner.jpg" Stretch="UniformToFill" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" />
+                    <Rectangle Height="44" VerticalAlignment="Bottom">
+                        <Rectangle.Fill>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                <GradientStop Color="Transparent" Offset="0" />
+                                <GradientStop Color="{DynamicResource BannerFade}" Offset="1" />
+                            </LinearGradientBrush>
+                        </Rectangle.Fill>
+                    </Rectangle>
+                    <Border BorderBrush="{DynamicResource Line}" BorderThickness="1" />
+                </Grid>
+                <TextBlock Text="{Binding StatsText}" Style="{StaticResource SectionTitle}" Margin="2,10,0,16" AutomationProperties.AutomationId="OverviewStats" />
+                <StackPanel Visibility="{Binding HasNoGroups, Converter={StaticResource BoolToVisibility}}" Margin="2,24,0,0">
+                    <TextBlock Text="{l:Tr 'Начните с первой группы'}" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="{l:Tr 'Группа собирает значки рабочего стола в одну рамку. Создайте её здесь и перенесите значки внутрь.'}" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" MaxWidth="520" HorizontalAlignment="Left" Margin="0,8,0,0" />
+                </StackPanel>
+                <TextBlock Text="{l:Tr 'Ничего не найдено.'}" Foreground="{DynamicResource Muted}" Margin="2,8,0,0" Visibility="{Binding NothingFound, Converter={StaticResource BoolToVisibility}}" />
+                <ItemsControl ItemsSource="{Binding OverviewGroups}" AutomationProperties.AutomationId="OverviewGroups">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <UniformGrid Columns="2" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Style="{StaticResource GroupCard}" MouseLeftButtonUp="OnCardClick" Tag="{Binding Id}" ToolTip="{l:Tr 'Открыть группу'}">
+                                <StackPanel>
+                                    <DockPanel Margin="0,0,0,10">
+                                        <TextBlock DockPanel.Dock="Right" Text="{Binding StateText}" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding Name}" Style="{StaticResource SectionTitle}" TextTrimming="CharacterEllipsis" />
+                                    </DockPanel>
+                                    <ItemsControl ItemsSource="{Binding Items}" MinHeight="104">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <UniformGrid Columns="3" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="0,0,0,6">
+                                                    <Image Source="{Binding IconUri}" Width="58" Height="58" RenderOptions.BitmapScalingMode="HighQuality" />
+                                                    <TextBlock Text="{Binding Name}" HorizontalAlignment="Center" TextAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="110" FontSize="13" Margin="0,4,0,0" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock Text="{l:Tr 'Группа пока пуста. Перетащите значки в неё на рабочем столе.'}" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,8,0,16">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsEmpty}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Right" Text="{Binding MoreText}" FontSize="12" Foreground="{DynamicResource Accent}" FontWeight="SemiBold" Visibility="{Binding HasMore, Converter={StaticResource BoolToVisibility}}" />
+                                        <TextBlock Text="{Binding CountText}" FontSize="12" Foreground="{DynamicResource Muted}" />
+                                    </DockPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

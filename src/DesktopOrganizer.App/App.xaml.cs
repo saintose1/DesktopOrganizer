@@ -3,6 +3,7 @@ using System.Windows;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using DesktopOrganizer.App.Themes;
 using DesktopOrganizer.App.ViewModels;
 using DesktopOrganizer.App.Views;
 using DesktopOrganizer.Infrastructure;
@@ -40,8 +41,13 @@ public partial class App : Application
             var dataDirectory = Path.GetFullPath(builder.Configuration["StorageDirectory"] ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DesktopOrganizer"));
             // Interface language first, so even the earliest message boxes use it.
-            try { Texts.SetLanguage(new JsonAppPreferences(dataDirectory, Microsoft.Extensions.Logging.Abstractions.NullLogger<JsonAppPreferences>.Instance).Load().Language); }
-            catch (Exception) { Texts.SetLanguage(null); } // unreadable settings: follow Windows; Settings reports the error
+            try
+            {
+                var preferences = new JsonAppPreferences(dataDirectory, Microsoft.Extensions.Logging.Abstractions.NullLogger<JsonAppPreferences>.Instance).Load();
+                Texts.SetLanguage(preferences.Language);
+                ThemeManager.Apply(preferences.Theme);
+            }
+            catch (Exception) { Texts.SetLanguage(null); ThemeManager.Apply(null); } // unreadable settings: follow Windows; Settings reports the error
             var storageKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(dataDirectory.ToUpperInvariant())));
             _instanceMutex = new Mutex(true, $"Local\\DesktopOrganizer-{storageKey}", out _ownsMutex);
             var restoreHidden = bool.TryParse(builder.Configuration["RestoreHidden"], out var restore) && restore;
@@ -86,7 +92,9 @@ public partial class App : Application
             var tray = _host.Services.GetRequiredService<TrayApplicationService>();
             tray.Start();
             if (!bool.TryParse(builder.Configuration["StartInTray"], out var startInTray) || !startInTray) tray.ShowWindow();
-            _host.Services.GetRequiredService<DesktopIntegrationService>().Start();
+            // --NoDesktop=true opens only the window (GUI checks next to a running instance never touch Explorer).
+            if (!bool.TryParse(builder.Configuration["NoDesktop"], out var noDesktop) || !noDesktop)
+                _host.Services.GetRequiredService<DesktopIntegrationService>().Start();
             _logger.LogInformation("DesktopOrganizer started");
         }
         catch (Exception exception)

@@ -71,6 +71,7 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
             _icons.StatusChanged += OnIconStatusChanged;
             _icons.FramePresented += OnFramePresented;
             _icons.GestureSettled += RefreshHoverPointer;
+            _icons.ConcealWhenIdle = _settings?.ConcealCollapsedItems == true;
         }
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
         _timer.Tick += OnTick;
@@ -109,6 +110,8 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
     private void OnPreferencesChanged(object? sender, PropertyChangedEventArgs args)
     {
         if (args.PropertyName == nameof(SettingsViewModel.AutoExpandOnHover)) RefreshHoverPointer();
+        if (args.PropertyName is nameof(SettingsViewModel.ConcealCollapsedItems) or "" && _icons is not null)
+            _icons.ConcealWhenIdle = _settings?.ConcealCollapsedItems == true;
     }
     private void RefreshHoverPointer()
     {

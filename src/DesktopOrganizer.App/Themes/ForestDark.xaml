@@ -1,0 +1,26 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Forest: dark palette. Keys are shared with ForestLight.xaml; styles live in ForestControls.xaml. -->
+    <SolidColorBrush x:Key="Base" Color="#0D1810" />
+    <SolidColorBrush x:Key="Sidebar" Color="#101F15" />
+    <SolidColorBrush x:Key="Titlebar" Color="#0E1C13" />
+    <SolidColorBrush x:Key="Panel" Color="#122318" />
+    <SolidColorBrush x:Key="PanelHover" Color="#17301F" />
+    <SolidColorBrush x:Key="Line" Color="#26392C" />
+    <SolidColorBrush x:Key="LineStrong" Color="#6F7E5E" />
+    <SolidColorBrush x:Key="Accent" Color="#86A35F" />
+    <SolidColorBrush x:Key="AccentFill" Color="#658345" />
+    <SolidColorBrush x:Key="AccentFillHover" Color="#749553" />
+    <SolidColorBrush x:Key="OnAccent" Color="#F1F5E4" />
+    <SolidColorBrush x:Key="NavActive" Color="#30492C" />
+    <SolidColorBrush x:Key="Text" Color="#E4E6D3" />
+    <SolidColorBrush x:Key="Muted" Color="#A5B09A" />
+    <SolidColorBrush x:Key="Field" Color="#0F2016" />
+    <SolidColorBrush x:Key="Popup" Color="#122318" />
+    <SolidColorBrush x:Key="PopupHover" Color="#1F3A27" />
+    <SolidColorBrush x:Key="PopupSelected" Color="#2A4A30" />
+    <SolidColorBrush x:Key="Danger" Color="#E8A2A2" />
+    <SolidColorBrush x:Key="Warning" Color="#E3C98F" />
+    <SolidColorBrush x:Key="CloseHover" Color="#8A3B36" />
+    <Color x:Key="BannerFade">#0D1810</Color>
+    <Color x:Key="ShadeColor">#0D1810</Color>
+</ResourceDictionary>

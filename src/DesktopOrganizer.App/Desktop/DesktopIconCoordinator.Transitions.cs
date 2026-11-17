@@ -20,6 +20,8 @@ public sealed partial class DesktopIconCoordinator
         if (target.Icons.IsEmpty) return null;
         if (!_initialized || !_positioningAvailable || _icons is not IDesktopIconAnimationPositioner positioner)
             throw new InvalidOperationException("Explorer icon animation is not ready.");
+        // An idle inventory read in flight would delay this transition's own snapshot on the Shell worker.
+        _observationRead?.Cancel();
         await WaitForPresentationAsync();
         if (startIsCollapsed && _concealment is not null)
         {
@@ -82,17 +84,16 @@ public sealed partial class DesktopIconCoordinator
             // Commit all parking slots and finish Shell redraw as soon as the last
             // visible glyph leaves. The remaining collapse frames only resize Fence.
             var targets = completes ? _final : _group;
-            _changed.Clear();
-            foreach (var t in targets)
-                if (!_owner._matched.TryGetValue(t.StableId, out var icon) || icon.Position != t.Position) _changed.Add(t);
-            var changed = _changed.Count != 0;
+            // Only items that moved this frame go to Explorer; the final frame re-sends the whole set.
+            var changed = AnimationFrameBatch.Select(targets,
+                id => _owner._matched.TryGetValue(id, out var icon) ? icon.Position : null, completes, _changed);
             if (!changed && !completes) { present(); return; }
             if (changed) _owner._host.SetIconTargets(_changed);
             var started = Stopwatch.GetTimestamp();
             try
             {
                 var shellStarted = Stopwatch.GetTimestamp();
-                if (changed) { await _shell.PositionAsync(targets, _owner._shutdown.Token); BulkUpdates++; }
+                if (changed) { await _shell.PositionAsync(_changed, _owner._shutdown.Token); BulkUpdates++; }
                 if (_owner._disposed) throw new OperationCanceledException("Desktop icons are shutting down.");
                 foreach (var target in targets)
                 {
