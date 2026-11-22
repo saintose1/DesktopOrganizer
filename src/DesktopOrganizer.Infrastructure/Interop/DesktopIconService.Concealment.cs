@@ -13,6 +13,7 @@ public sealed partial class DesktopIconService
 {
     private readonly string? _concealmentPath;
     private readonly HashSet<string> _concealed = new(FenceIconLayout.IdentityComparer);
+    private readonly HashSet<string> _concealmentDenied = new(FenceIconLayout.IdentityComparer);
     private readonly Lock _concealmentLock = new();
 
     public IReadOnlyCollection<string> Concealed { get { lock (_concealmentLock) return _concealed.ToArray(); } }
@@ -22,27 +23,34 @@ public sealed partial class DesktopIconService
         {
             if (_concealmentPath is null || ShowsHiddenItems()) return [];
             var candidates = ids.Distinct(FenceIconLayout.IdentityComparer)
-                .Where(id => { lock (_concealmentLock) return !_concealed.Contains(id); }).Where(CanConceal).ToArray();
+                .Where(id => { lock (_concealmentLock) return !_concealed.Contains(id); })
+                .Where(id => !_concealmentDenied.Contains(id) && CanConceal(id)).ToArray();
             if (candidates.Length == 0) return [];
-            lock (_concealmentLock) foreach (var id in candidates) _concealed.Add(id);
-            SaveConcealment(); // journal first
+            SaveConcealment(candidates); // journal first, even if the process stops mid-batch
             var hidden = new List<string>(candidates.Length);
+            var denied = 0;
             foreach (var id in candidates)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested) break;
                 try
                 {
-                    File.SetAttributes(id, File.GetAttributes(id) | FileAttributes.Hidden);
+                    var attributes = File.GetAttributes(id);
+                    if ((attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0) continue;
+                    File.SetAttributes(id, attributes | FileAttributes.Hidden);
+                    lock (_concealmentLock) _concealed.Add(id);
                     hidden.Add(id);
                 }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-                { lock (_concealmentLock) _concealed.Remove(id); }
+                catch (UnauthorizedAccessException) { if (_concealmentDenied.Add(id)) denied++; }
+                catch (Exception error) when (error is IOException or ArgumentException or NotSupportedException)
+                { /* Unwritable items stay parked. */ }
             }
             // Until Explorer drops them, a native drop can still reflow these items. One SHCNE_UPDATEDIR per folder
             // removes a whole group in about 0.55 s (15 items), versus ~1.1-1.5 s for per-item SHCNE_DELETE.
             foreach (var folder in hidden.Select(Path.GetDirectoryName).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase))
                 NotifyItem(0x1000, folder);
             if (hidden.Count != candidates.Length) SaveConcealment();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (denied != 0) _logger.LogInformation("Windows denied changes to {Count} collapsed items; they remain parked", denied);
             if (hidden.Count != 0) _logger.LogInformation("Concealed {Count} collapsed-group items with the Hidden attribute", hidden.Count);
             return hidden;
         }, cancellationToken);
@@ -54,29 +62,34 @@ public sealed partial class DesktopIconService
             var mine = items.Where(i => { lock (_concealmentLock) return _concealed.Contains(i.Id); })
                 .DistinctBy(i => i.Id, FenceIconLayout.IdentityComparer).ToArray();
             if (mine.Length == 0) return true;
+            var ready = new List<(string Id, DesktopPoint? Position)>(mine.Length);
+            var journalChanged = false;
             foreach (var item in mine)
             {
                 try
                 {
                     var attributes = File.GetAttributes(item.Id);
                     if ((attributes & FileAttributes.Hidden) != 0) File.SetAttributes(item.Id, attributes & ~FileAttributes.Hidden);
+                    ready.Add(item);
                 }
                 catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
                 { _logger.LogWarning(error, "Could not clear the Hidden attribute of a collapsed-group item; it stays journaled"); continue; }
-                lock (_concealmentLock) _concealed.Remove(item.Id);
+                lock (_concealmentLock) journalChanged |= _concealed.Remove(item.Id);
             }
-            SaveConcealment();
+            if (journalChanged) SaveConcealment();
+            // Waiting for deleted or still-hidden files would hold Explorer redraw until the timeout.
+            if (ready.Count == 0) return true;
             try
             {
                 if (_session is null || !_discovery.Validate(_session.Handles)) _ = GetSession();
-                var shown = _session!.Reveal(mine, CancellationToken.None);
-                if (shown.Count != mine.Length) _logger.LogWarning("Explorer showed {Shown} of {Count} revealed items within the timeout", shown.Count, mine.Length);
+                var shown = _session!.Reveal(ready, CancellationToken.None);
+                if (shown.Count != ready.Count) _logger.LogWarning("Explorer showed {Shown} of {Count} revealed items within the timeout", shown.Count, ready.Count);
             }
             catch (Exception error)
             {
                 // Attributes are already cleared; Explorer's own watcher shows the items shortly.
-                foreach (var item in mine) NotifyItem(0x2, item.Id);
+                foreach (var item in ready) NotifyItem(0x2, item.Id);
                 _logger.LogWarning(error, "Revealed items without placement; Explorer will show them on its own");
             }
             return true;
@@ -119,11 +132,11 @@ public sealed partial class DesktopIconService
             _logger.LogError(error, "Cannot read the hidden-items journal; a copy was kept at {Path}", copy);
         }
     }
-    private void SaveConcealment()
+    private void SaveConcealment(string[]? pending = null)
     {
         if (_concealmentPath is null) return;
         string[] ids;
-        lock (_concealmentLock) ids = _concealed.ToArray();
+        lock (_concealmentLock) ids = _concealed.Concat(pending ?? []).ToArray();
         var temporary = _concealmentPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {

@@ -23,7 +23,8 @@ public interface IDesktopDropReconciler
     // The callback computes a pure layout from a final native snapshot before the
     // short positioning/redraw lease. Empty targets do not acquire a redraw lease.
     // It must not do UI, persistence, additional COM calls or asynchronous work.
-    Task ReconcileDropAsync(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout, CancellationToken cancellationToken = default);
+    Task ReconcileDropAsync(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout,
+        CancellationToken cancellationToken = default, IReadOnlySet<string>? positionScope = null);
 }
 public readonly record struct DesktopPositionCounters(long Batches, long RedrawCompletions);
 public interface IDesktopPositionDiagnostics { DesktopPositionCounters PositionCounters { get; } }

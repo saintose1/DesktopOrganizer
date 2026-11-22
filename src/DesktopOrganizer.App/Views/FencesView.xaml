@@ -7,6 +7,7 @@
         </Grid.RowDefinitions>
         <DockPanel Margin="0,0,0,16">
             <Button DockPanel.Dock="Right" Content="{l:Tr '＋  Новая группа'}" Command="{Binding CreateCommand}" Style="{StaticResource Primary}" AutomationProperties.AutomationId="CreateFence" />
+            <Button DockPanel.Dock="Right" Content="{l:Tr 'Добавить поиск'}" Command="{Binding CreateSearchFenceCommand}" Margin="0,0,8,0" AutomationProperties.AutomationId="CreateSearchFence" />
             <TextBlock Text="{l:Tr 'Группы'}" Style="{StaticResource PageTitle}" VerticalAlignment="Center" />
         </DockPanel>
         <Grid Grid.Row="1">
@@ -67,6 +68,9 @@
             <TextBlock Text="{Binding Error}" Foreground="{DynamicResource Danger}" TextWrapping="Wrap" Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
             <DockPanel Margin="0,6,0,0">
                 <Button DockPanel.Dock="Right" Content="{l:Tr 'К рабочему столу ↗'}" Command="{Binding ShowDesktopCommand}" AutomationProperties.AutomationId="ShowDesktop" Padding="12,6" />
+                <Button DockPanel.Dock="Right" Content="{l:Tr 'Исправить общие ярлыки'}" Click="OnMoveSharedShortcuts"
+                        Visibility="{Binding HasSharedShortcuts, Converter={StaticResource BoolToVisibility}}" Margin="0,0,8,0"
+                        AutomationProperties.AutomationId="MoveSharedShortcuts" Padding="12,6" />
                 <TextBlock Text="{Binding Status}" FontSize="12" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0" />
             </DockPanel>
         </StackPanel>

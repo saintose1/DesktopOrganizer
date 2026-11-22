@@ -21,7 +21,7 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     private readonly HashSet<nint> _destroying = [];
     private readonly DesktopIconEvents _iconEvents = new(logger, interactionTrace);
     public ExplorerInteractionTrace Trace { get; } = interactionTrace ?? new(Microsoft.Extensions.Logging.Abstractions.NullLogger<ExplorerInteractionTrace>.Instance);
-    private IReadOnlyList<DesktopIcon> _icons = [];
+    private IReadOnlyDictionary<string, DesktopIcon> _icons = new Dictionary<string, DesktopIcon>(FenceIconLayout.IdentityComparer);
     private bool _stackingDirty;
     private ExplorerIconLayer? _iconLayer;
     private bool _probeCompositionEnabled = true;
@@ -248,7 +248,7 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
         public void Dispose() { if (_disposed) return; _disposed = true; _surface.EndHeightAnimation(); }
     }
     public void Clear() { foreach (var id in _windows.Keys.ToArray()) Remove(id); }
-    public void SetIcons(IReadOnlyList<DesktopIcon> icons)
+    public void SetIcons(IReadOnlyDictionary<string, DesktopIcon> icons)
     {
         _icons = icons;
     }
@@ -276,8 +276,7 @@ public sealed class Win32DesktopHost(DesktopDiscovery discovery, ILogger<Win32De
     {
         foreach (var target in targets)
         {
-            var icon = _icons.FirstOrDefault(i => FenceIconLayout.IdentityComparer.Equals(i.StableId, target.StableId));
-            if (icon is not null)
+            if (_icons.TryGetValue(target.StableId, out var icon))
             {
                 _damage.Add(icon.Bounds);
                 _damage.Add(icon.Bounds with { X = icon.Bounds.X + target.Position.X - icon.Position.X, Y = icon.Bounds.Y + target.Position.Y - icon.Position.Y });

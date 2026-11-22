@@ -33,19 +33,56 @@ internal static class RenderingSmoke
     }
     private static async Task Scenario(bool showDesktop)
     {
+        foreach (var process in Process.GetProcessesByName("DesktopOrganizer.App"))
+            using (process) throw new InvalidOperationException("Exit DesktopOrganizer through its tray before the rendering smoke.");
         var directory = Path.GetFullPath(Path.Combine(".tools", "rendering-smoke", DateTime.Now.ToString("yyyyMMdd-HHmmss")));
         Directory.CreateDirectory(directory);
         using var reader = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
         var initial = await reader.ReadAsync();
         if (!initial.Connected || !initial.CanPosition || initial.Error is not null) throw new InvalidOperationException(initial.Error ?? "No Explorer.");
-        File.WriteAllText(Path.Combine(directory, "original-positions.json"), JsonSerializer.Serialize(initial.Icons.Select(i => new DesktopIconTarget(i.StableId, i.Position))));
-        var probes = initial.Icons.Where(i => i.StableId.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)).Take(12).ToArray();
-        if (probes.Length != 12) throw new InvalidOperationException("Twelve real shortcuts are required.");
+        var originalTargets = initial.Icons.Select(i => new DesktopIconTarget(i.StableId, i.Position)).ToArray();
+        File.WriteAllText(Path.Combine(directory, "original-positions.json"), JsonSerializer.Serialize(originalTargets));
+        var desktopDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        if (!Directory.Exists(desktopDirectory)) throw new InvalidOperationException("Desktop directory unavailable.");
+        var prefix = "DesktopOrganizer-probe-render-" + Guid.NewGuid().ToString("N") + "-";
+        var owned = new HashSet<string>(FenceIconLayout.IdentityComparer);
+        try
+        {
+            for (var index = 0; index < 12; index++)
+            {
+                var path = Path.Combine(desktopDirectory, $"{prefix}{index}.txt");
+                using (var file = new FileStream(path, FileMode.CreateNew)) owned.Add(path);
+                DesktopDiagnostics.NotifySmokeItemChange(path);
+            }
+            var ready = await ReadUntilAsync(reader, snapshot => snapshot.Icons.Count(icon => owned.Contains(icon.StableId)) == 12);
+            var probes = ready.Icons.Where(icon => owned.Contains(icon.StableId)).ToArray();
+            await ExerciseAsync(showDesktop, directory, reader, ready.Metrics, probes);
+        }
+        finally
+        {
+            foreach (var path in owned)
+            {
+                File.Delete(path);
+                DesktopDiagnostics.NotifySmokeItemChange(path, deleted: true);
+            }
+            var refreshed = await ReadUntilAsync(reader, snapshot => !snapshot.Icons.Any(icon => owned.Contains(icon.StableId)) &&
+                originalTargets.All(target => snapshot.Icons.Any(icon => FenceIconLayout.IdentityComparer.Equals(target.StableId, icon.StableId))));
+            if (!IconPlacement.AtTargets(refreshed, originalTargets)) await reader.PositionAsync(originalTargets);
+            reader.Dispose(); // Verify after restoring any grid flags that the reader changed.
+            using var verifier = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
+            await ReadUntilAsync(verifier, snapshot => IconPlacement.AtTargets(snapshot, originalTargets));
+            Console.WriteLine($"PASS: all {originalTargets.Length} original desktop item positions restored after fixture cleanup");
+        }
+    }
+
+    private static async Task ExerciseAsync(bool showDesktop, string directory, DesktopIconService reader,
+        IconGridMetrics metrics, DesktopIcon[] probes)
+    {
         var store = new JsonFenceStore(directory, NullLogger<JsonFenceStore>.Instance);
         var seed = new Fence(Guid.NewGuid(), "Rendering probe", 600, 120, 750, 650, false,
             probes.Select(i => new DesktopIconAssignment(i.StableId, i.DisplayName, 0, 0)));
         var empty = new Fence(Guid.NewGuid(), "Empty rendering probe", 1600, 120, 500, 500);
-        seed = FenceIconLayout.Arrange(seed, initial.Metrics, 1.5); store.Save([seed, empty]);
+        seed = FenceIconLayout.Arrange(seed, metrics, 1.5); store.Save([seed, empty]);
         using var native = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
         var handles = new DesktopDiscovery(NullLogger<DesktopDiscovery>.Instance).Find()!;
         var originalPresentation = DesktopDiagnostics.IconVisibility(handles);
@@ -113,6 +150,10 @@ internal static class RenderingSmoke
                 int? shellCompletionHeight = null;
                 animationBatches = 0; toggle(before);
                 var heights = new List<int>();
+                var sampledPositions = new HashSet<double>();
+                var firstItem = desired.Icons[0];
+                var firstSlot = IconPlacement.Normal(desired, firstItem);
+                var firstIdentity = new HashSet<string>(FenceIconLayout.IdentityComparer) { firstItem.StableId };
                 while (desktop.IsPresentingTransition && Stopwatch.GetElapsedTime(started).TotalSeconds < 5)
                 {
                     var surface = DesktopDiagnostics.Inspect(host.Handles!).Single(s => s.Caption.EndsWith("Rendering probe", StringComparison.Ordinal));
@@ -123,6 +164,19 @@ internal static class RenderingSmoke
                     if (native.PositionCounters.RedrawCompletions > counters.RedrawCompletions)
                         shellCompletionHeight ??= surface.Bounds.Height;
                     if (vm.Fences[0].Height != normalHeight) throw new InvalidOperationException("Animation changed normal model Height.");
+                    if (!collapsed && seconds == 0.4 && sampledPositions.Count < 2)
+                    {
+                        // Read on the positioning worker so the sample cannot overlap a Shell move.
+                        var sample = await native.ReadAnimationItemsAsync(firstIdentity);
+                        if (sample.Error is null && sample.Icons.SingleOrDefault() is { } icon &&
+                            Math.Abs(icon.Position.X - firstSlot.X) <= 2 && icon.Position.Y > firstSlot.Y + 2)
+                        {
+                            // The async Shell read can span a new geometry update.
+                            var current = DesktopDiagnostics.Inspect(host.Handles!).Single(s => s.Hwnd == stableHwnd).Bounds;
+                            if (icon.Bounds.Y + icon.Bounds.Height <= current.Y + current.Height)
+                                sampledPositions.Add(icon.Position.Y);
+                        }
+                    }
                     await Task.Delay(10);
                 }
                 var elapsed = Stopwatch.GetElapsedTime(started).TotalSeconds;
@@ -137,6 +191,8 @@ internal static class RenderingSmoke
                     throw new InvalidOperationException("Animation violated one bulk per frame / one final Shell completion.");
                 if (collapsed && !(shellCompletionHeight > headerHeight))
                     throw new InvalidOperationException("Icon hide waited until after the collapsed Fence presentation.");
+                if (!collapsed && seconds == 0.4 && sampledPositions.Count < 2)
+                    throw new InvalidOperationException("The first real Explorer item did not slide through two visible positions before settling.");
                 await WaitPositions(desired);
                 if (DesktopDiagnostics.IconRegion(host.Handles!) != originalRegion) throw new InvalidOperationException("Animation modified the Explorer window region.");
                 animationReports.Add(new { iconCount, seconds, collapsed, observed = elapsed, animator.LastMetrics, bulkUpdates = batches, shellCompletions = redraws, shellCompletionHeight });
@@ -255,28 +311,10 @@ internal static class RenderingSmoke
         finally
         {
             desktop.Dispose(); native.Dispose(); window.Close();
-            // Explorer can displace neighbours when probes cross occupied cells. Restore the whole snapshot.
-            var originalTargets = initial.Icons.Select(i => new DesktopIconTarget(i.StableId, i.Position)).ToArray();
-            // A read taken during resize can intentionally omit unstable identities. Refresh the
-            // complete Shell snapshot before restoring; never reuse that partial PIDL cache.
-            DesktopIconSnapshot refreshed = await reader.ReadAsync();
-            for (var retry = 0; (refreshed.Error is not null || refreshed.Icons.Count != initial.Icons.Count) && retry < 50; retry++)
-            { await Task.Delay(10); refreshed = await reader.ReadAsync(); }
-            if (refreshed.Error is not null || refreshed.Icons.Count != initial.Icons.Count)
-                throw new InvalidOperationException("Cannot obtain a stable restoration snapshot; original-positions.json retained.");
-            await reader.PositionAsync(originalTargets);
-            reader.Dispose(); // Verify after the session restores the original Explorer grid flags.
-            using var verifier = new DesktopIconService(NullLogger<DesktopIconService>.Instance, NullLogger<DesktopDiscovery>.Instance);
-            var restored = await verifier.ReadAsync();
-            for (var retry = 0; !IconPlacement.AtTargets(restored, originalTargets) && retry < 50; retry++)
-            { await Task.Delay(10); restored = await verifier.ReadAsync(); }
-            if (!IconPlacement.AtTargets(restored, originalTargets))
-                throw new InvalidOperationException("Original positions not restored.");
-            Console.WriteLine($"PASS: all {originalTargets.Length} original desktop item positions restored after grid restoration");
         }
         async Task WaitPositions(Fence fence)
         {
-            var targets = IconPlacement.Targets([fence], monitors, initial.Metrics);
+            var targets = IconPlacement.Targets([fence], monitors, metrics);
             for (var i = 0; i < 150; i++)
             {
                 if (IconPlacement.AtTargets(await reader.ReadAsync(), targets)) return;
@@ -293,6 +331,18 @@ internal static class RenderingSmoke
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
             using var file = File.Create(Path.Combine(directory, name + ".png")); encoder.Save(file);
         }
+    }
+    private static async Task<DesktopIconSnapshot> ReadUntilAsync(DesktopIconService reader, Func<DesktopIconSnapshot, bool> ready)
+    {
+        var started = Stopwatch.GetTimestamp();
+        do
+        {
+            var snapshot = await reader.ReadAsync();
+            if (snapshot.Connected && snapshot.CanPosition && snapshot.Error is null && ready(snapshot)) return snapshot;
+            await Task.Delay(20);
+        }
+        while (Stopwatch.GetElapsedTime(started).TotalSeconds < 10);
+        throw new InvalidOperationException("Explorer did not return the expected complete inventory or positions.");
     }
     private sealed class ProbeStartup : IStartupRegistration
     { public bool IsEnabled() => false; public void SetEnabled(bool enabled) { } }

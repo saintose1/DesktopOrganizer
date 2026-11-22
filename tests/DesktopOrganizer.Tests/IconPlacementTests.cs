@@ -40,6 +40,22 @@ public sealed class IconPlacementTests
         Assert.NotEqual(IconPlacement.Recovery([group])[0], IconPlacement.Recovery([group.WithBounds(100, 200, 450, 350)])[0]);
     }
     [Fact]
+    public void TogglingOneFenceKeepsOtherParkingSlotsAndBatchesOnlyTheToggledFence()
+    {
+        var first = Group(false);
+        var second = new Fence(Guid.NewGuid(), "Other", 800, 100, 450, 350, true, [new("C", "C", 40, 70)]);
+        var third = new Fence(Guid.NewGuid(), "Last", 1400, 100, 450, 350, false, [new("D", "D", 40, 70)]);
+        var metrics = IconGridMetrics.Default;
+        var expanded = IconPlacement.Targets([first, second, third], Monitors, metrics);
+        var collapsed = IconPlacement.Targets([first.ToggleCollapsed(), second, third], Monitors, metrics);
+
+        Assert.Equal(expanded.Skip(2), collapsed.Skip(2));
+        Assert.Equal(expanded.Skip(2).Take(1), IconPlacement.Targets([first, second, third], Monitors, metrics, second.Id));
+        var batch = IconPlacement.Targets([first.ToggleCollapsed(), second, third], Monitors, metrics, first.Id);
+        Assert.Equal(collapsed.Take(2), batch);
+        Assert.DoesNotContain(expanded[2].Position, batch.Select(t => t.Position));
+    }
+    [Fact]
     public void RecoveryContainsOnlyCollapsedIconsAtTheirNormalPositions()
     {
         Assert.Empty(IconPlacement.Recovery([Group(false)]));

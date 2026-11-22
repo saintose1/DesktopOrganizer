@@ -52,20 +52,33 @@ Artifacts: `.tools/rendering-smoke/20261003-174905`.
    Если во время commit пришёл новый pulse, после завершения берётся только
    последний из них, без ожидания ещё одного refresh и без очереди старых кадров.
    Нет отдельного icon timer/polling, fixed FPS sleep loop или зависимости от MainWindow.
-5. FenceAnimationFrame содержит raw progress, eased progress и высоту. Одна cubic
-   функция применяется к высоте и icon positions (expand: ease-out, collapse: ease-in-out).
+5. FenceAnimationFrame содержит raw progress, eased progress и высоту. Одно значение
+   eased progress применяется к высоте и позициям значков (expand: cubic ease-out,
+   collapse: quadratic ease-out).
    Абсолютные start/target координаты округляются один раз, rounding error не накапливается.
-   Expand фиксирует всю коллекцию на финальном raw progress; collapse — когда
+   Expand фиксирует значки этой группы на финальном raw progress; collapse — когда
    вся группа уже попала в parking. Не использовать преждевременно округлённое
-   easing как признак конца. Commit также обновляет parking slots остальных collapsed groups.
+   easing как признак конца. Парковочные слоты резервируются и для раскрытых групп,
+   поэтому раскрытие и сворачивание не сдвигают значки соседних групп.
 6. Glyph bounds из стартового snapshot определяют видимость каждого item:
    полный glyph внутри текущего content → интерполированная позиция;
    иначе → настоящий offscreen parking. Ни SetWindowRgn, ни layered styles Explorer
    на кадрах не меняются. Не создаются fake icons, WPF overlay или копии glyph.
-   При появлении icon показывается целиком, без per-pixel clipping или fade.
+   При раскрытии значок входит со стороны нижней кромки и скользит вверх в свою
+   ячейку. Смещение уменьшается по общему progress, расстояния между рядами
+   сохраняются. Значок показывается целиком, когда помещается в текущую область.
+   Если группа скрыта ещё и атрибутом Hidden, Shell должен вернуть её элементы
+   в представление. Ожидание проверяет число элементов ListView и читает полный
+   снимок при его изменении. Резервное чтение учитывает замены без изменения числа.
+   Возвращённые значки занимают парковочные позиции до старта общей анимации.
+   При подготовке перехода и перед сохранением его результата Explorer заново отдаёт
+   координаты и границы значков выбранной группы. Пустой Fence пропускает чтение
+   позиций. Индексы берутся из полного снимка и сверяются по Shell identity. При
+   изменении состава рабочего стола, индексов, DPI или шага сетки используется
+   полное чтение. Выборочный снимок не заменяет список значков для наблюдения за desktop.
 7. На изменившийся кадр: максимум один
    [SelectAndPositionItems](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifolderview-selectandpositionitems)
-   всей группы на существующем STA worker; затем height-only native presentation,
+   для изменившихся значков на существующем STA worker; затем height-only native presentation,
    один targeted
    RedrawWindow только для объединённых old/new bounds действительно перемещённых glyph.
    Parking клипируется до видимой desktop области и не даёт fullscreen damage.
@@ -77,6 +90,10 @@ Artifacts: `.tools/rendering-smoke/20261003-174905`.
    После parking commit оставшиеся кадры меняют только Fence height.
    Число icons не умножает число COM batches.
    Повторные позиции/геометрия пропускаются; следующий кадр не опережает icon commit.
+   Границы старых и новых позиций ищутся по Shell identity в текущем снимке.
+   Для очередного кадра не создаётся копия списка всех значков рабочего стола.
+   Буферы Shell для PIDL и координат выделяются один раз на переход.
+   Вызов получает фактическое число изменившихся значков кадра.
 8. Height-only path меняет только нижнюю полосу кешированных DIB: максимум 2 ULW
    и один region собственного header/frame на изменившийся размер. Нет полного WPF
    render или явного SetWindowPos. Небольшие HRGN, передаваемые Windows, выделяются;
@@ -139,6 +156,8 @@ Shell positioning/painting ограничивает частоту; совмес
 Debug агрегированно логирует transition: frame/geometry counts, FPS, interval
 avg/max, coalesced pulses, estimated missed cadence, ULW/region time, Explorer
 redraw count, prepared/per-frame DIB allocations и header rasterizations;
+строка `Fence animation startup` разделяет подготовку поверхности, подготовку Shell
+и время от запуска DWM clock до первой отправки изменившейся геометрии.
 отдельно bulk count, Shell/presentation/paint time, Shell finish duration/progress.
 Нет строк для каждого frame.
 Missed cadence — оценка по median интервалу; coalesced — точный счётчик pulses
@@ -150,7 +169,12 @@ Missed cadence — оценка по median интервалу; coalesced — т
 неизменность original region в течение и после transition,
 drag/resize через настоящие API, restart и возврат исходных позиций всех desktop items.
 Replay API не является проверкой физических mouse/OLE gestures.
-Debug и Release: 0 warnings/errors; 303/303 tests в каждой конфигурации.
+Проверка 20 ноября 2026 года: на 18 переходах с 1, 5 и 12 временными элементами
+cadence составил 132,7–214,6 FPS. Это частота callback анимации. При длительности
+0,4 с Explorer подтвердил несколько промежуточных позиций значка первого ряда
+внутри раскрывающегося Fence. Для 12 значков с атрибутом Hidden возврат в Shell
+сдвинул первый кадр примерно на 0,9 с. Визуальное восприятие и отсутствие мерцания
+требуют отдельной проверки на экране.
 Пользователь подтвердил отсутствие flash после удаления region path.
 Дополнительное сокращение задержки через ранний hide commit пока проверено
 программно на реальном Shell; субъективная задержка требует повторной проверки.

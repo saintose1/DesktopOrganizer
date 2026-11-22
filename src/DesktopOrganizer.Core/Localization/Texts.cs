@@ -101,6 +101,10 @@ public static class Texts
         // Settings page
         ["02 / ПРЕДПОЧТЕНИЯ"] = "02 / PREFERENCES",
         ["Настройки"] = "Settings",
+        ["Обратная связь"] = "Feedback",
+        ["Сообщить об ошибке"] = "Report a bug",
+        ["Сообщения об ошибках публикуются на GitHub."] = "Bug reports are posted publicly on GitHub.",
+        ["Не удалось открыть браузер. Форму можно найти на GitHub во вкладке Issues."] = "Could not open the browser. You can find the form on GitHub under Issues.",
         ["Ваш рабочий стол. Ваш привычный ритм."] = "Your desktop. Your rhythm.",
         ["ЯЗЫК"] = "LANGUAGE",
         ["Язык интерфейса"] = "Interface language",
@@ -210,10 +214,22 @@ public static class Texts
         ["Применяется сразу. «Как в Windows» следует режиму приложений в параметрах Windows."] =
             "Applies immediately. “Match Windows” follows the app mode in Windows settings.",
         ["Группы на рабочем столе"] = "Desktop groups",
+        ["Поиск программ"] = "Find an app",
+        ["Добавить поиск"] = "Add search",
+        ["Загрузка ярлыков…"] = "Loading shortcuts…",
+        ["Совпадений нет"] = "No matches",
+        ["Открыть"] = "Open",
+        ["Не удалось открыть ярлык."] = "Could not open the shortcut.",
+        ["Исправить общие ярлыки"] = "Fix shared shortcuts",
+        ["Перенести эти ярлыки на ваш личный рабочий стол? Они исчезнут с рабочих столов других учётных записей. Привязки к группам сохранятся.\n\n{0}"] =
+            "Move these shortcuts to your personal desktop? They will be removed from the desktop of other Windows accounts. Their group assignments will be kept.\n\n{0}",
+        ["Перенесено общих ярлыков: {0}."] = "Shared shortcuts moved: {0}.",
+        ["Не удалось завершить перенос: {0}. Проверьте права и наличие одноимённых ярлыков."] =
+            "Could not finish moving: {0}. Check permissions and whether a shortcut with the same name already exists.",
         ["Окно и трей"] = "Window and tray",
         ["Всегда скрывать значки свёрнутых групп"] = "Always hide icons of collapsed groups",
-        ["Выключено: группы раскрываются мгновенно, а значки прячутся только пока вы перетаскиваете что-то на рабочем столе. Включено: значки не мелькают даже при перетаскивании из других окон, но при раскрытии Explorer показывает их примерно через 0,6 с."] =
-            "Off: groups expand instantly and their icons are hidden only while you drag something on the desktop. On: icons never flash, even when you drag from other windows, but on expand Explorer shows them after about 0.6 s.",
+        ["Включено: значки скрываются сразу после сворачивания. Выключено: пока курсор остаётся на заголовке, группу можно быстро раскрыть повторно."] =
+            "On: icons are hidden when the group collapses. Off: the group can reopen quickly while the pointer stays on its title bar.",
         // Tray and lifetime
         ["Открыть DesktopOrganizer"] = "Open DesktopOrganizer",
         ["Выход"] = "Exit",

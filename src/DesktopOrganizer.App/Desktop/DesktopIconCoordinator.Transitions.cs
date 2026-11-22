@@ -23,31 +23,21 @@ public sealed partial class DesktopIconCoordinator
         // An idle inventory read in flight would delay this transition's own snapshot on the Shell worker.
         _observationRead?.Cancel();
         await WaitForPresentationAsync();
-        if (startIsCollapsed && _concealment is not null)
-        {
-            var concealed = ConcealedIds();
-            var hidden = target.Icons.Where(i => concealed.Contains(i.StableId)).ToArray();
-            var approaching = !_prewarm.IsCompleted && _prewarmFence == target.Id;
-            if (approaching || hidden.Length != 0 && hidden.Length == target.Icons.Length)
-            {
-                // Explorer needs ~0.6 s to re-add a hidden group. The Fence expands at once; the items
-                // appear directly in their slots (inside one redraw lease) as soon as Explorer has them.
-                _ = RevealInPlaceAsync(target, approaching ? target.Icons.ToArray() : hidden);
-                return null;
-            }
-            if (hidden.Length != 0) await RevealGroupAsync(target); // mixed group: hidden items rejoin parking first
-        }
-        // One snapshot before the shared clock starts. Observation/polling is gated throughout the transition.
-        var snapshot = await _icons.ReadAsync(_shutdown.Token);
+        if (startIsCollapsed && !target.IsCollapsed)
+            await RevealGroupAsync(target); // Hidden items must rejoin parking before the shared clock starts.
+        // Refresh actual positions and glyph bounds for this Fence before the shared clock starts.
+        var ids = target.Icons.Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
+        var snapshot = await positioner.ReadAnimationItemsAsync(ids, _shutdown.Token);
         if (!snapshot.Connected || !snapshot.CanPosition || snapshot.Error is not null) throw new InvalidOperationException(snapshot.Error ?? "Explorer is unavailable.");
-        ApplySnapshot(snapshot);
+        foreach (var id in ids) _matched.Remove(id);
+        foreach (var icon in snapshot.Icons) _matched[icon.StableId] = icon;
         if (target.Icons.Any(i => _matched.ContainsKey(i.StableId) && !_recovery.Any(r => FenceIconLayout.IdentityComparer.Equals(r.StableId, i.StableId))))
             throw new InvalidOperationException("Recovery must be armed before animating desktop icons.");
         var proposed = _fences.Select(f => f.Id == target.Id ? target : f).ToArray();
-        var final = IconPlacement.Targets(proposed, _monitors, Metrics).Where(t => _matched.ContainsKey(t.StableId)).ToArray();
+        var final = IconPlacement.Targets(proposed, _monitors, Metrics, target.Id).Where(t => _matched.ContainsKey(t.StableId)).ToArray();
         var parked = proposed.Select(f => f.Id == target.Id && !f.IsCollapsed ? f.ToggleCollapsed() : f).ToArray();
         var plan = new FenceIconAnimationPlan(target, snapshot.Icons, final, _monitors, startIsCollapsed,
-            IconPlacement.Targets(parked, _monitors, Metrics), FenceInteractionGeometry.HeaderHeight * _host.GetScale(target));
+            IconPlacement.Targets(parked, _monitors, Metrics, target.Id), FenceInteractionGeometry.HeaderHeight * _host.GetScale(target));
         if (plan.Count == 0) return null;
         var shell = await positioner.BeginAnimationAsync(plan.InitialTargets, plan.FinalTargets, _shutdown.Token);
         return new AnimatedTransition(this, plan, shell);
@@ -81,7 +71,7 @@ public sealed partial class DesktopIconCoordinator
             _plan.Fill(frame.EasedProgress, false, _group, content);
             var finishParking = _plan.CanFinishParking(_group);
             var completes = frame.Progress >= 1 || finishParking;
-            // Commit all parking slots and finish Shell redraw as soon as the last
+            // Commit this group's parking slots and finish Shell redraw as soon as the last
             // visible glyph leaves. The remaining collapse frames only resize Fence.
             var targets = completes ? _final : _group;
             // Only items that moved this frame go to Explorer; the final frame re-sends the whole set.
@@ -95,13 +85,12 @@ public sealed partial class DesktopIconCoordinator
                 var shellStarted = Stopwatch.GetTimestamp();
                 if (changed) { await _shell.PositionAsync(_changed, _owner._shutdown.Token); BulkUpdates++; }
                 if (_owner._disposed) throw new OperationCanceledException("Desktop icons are shutting down.");
-                foreach (var target in targets)
+                foreach (var target in _changed)
                 {
                     if (!_owner._matched.TryGetValue(target.StableId, out var old)) continue;
                     _owner._matched[target.StableId] = old with { Position = target.Position, Bounds = old.Bounds with
                     { X = old.Bounds.X + target.Position.X - old.Position.X, Y = old.Bounds.Y + target.Position.Y - old.Position.Y } };
                 }
-                _owner._host.SetIcons(_owner._matched.Values.ToArray());
                 present();
                 // Redraw was never disabled. Re-enabling it on every frame makes Explorer
                 // repaint twice (Shell completion + our damage). Finish the Shell session

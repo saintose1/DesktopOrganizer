@@ -1,10 +1,18 @@
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using System.Text;
 
 namespace DesktopOrganizer.Infrastructure.Interop;
 
 internal static class NativeMethods
 {
+    internal static bool CanOpenFileFor(string path, uint access)
+    {
+        using var file = CreateFile(path, access, 7, 0, 3, 0, 0); // OPEN_EXISTING with read/write/delete sharing
+        return !file.IsInvalid;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(string path, uint access, uint sharing, nint security, uint creation, uint flags, nint template);
     internal const uint Child = 0x40000000, Visible = 0x10000000, Disabled = 0x08000000;
     internal const uint Layered = 0x00080000, Transparent = 0x20, NoActivate = 0x08000000, ToolWindow = 0x80;
     internal const uint NoActivation = 0x10, ShowWindowFlag = 0x40;

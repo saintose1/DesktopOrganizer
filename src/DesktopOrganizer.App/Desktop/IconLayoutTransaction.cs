@@ -10,7 +10,8 @@ public sealed class IconLayoutTransaction(IDesktopIconService icons)
     /// A rejected commit must never move them back to the positions Explorer displaced them to.
     /// </param>
     public async Task<DesktopIconSnapshot> ApplyPlannedAsync(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout,
-        Func<DesktopIconSnapshot, Task<bool>> commit, CancellationToken cancellationToken = default, Func<string, bool>? keepOnRollback = null)
+        Func<DesktopIconSnapshot, Task<bool>> commit, CancellationToken cancellationToken = default,
+        Func<string, bool>? keepOnRollback = null, IReadOnlySet<string>? positionScope = null)
     {
         IReadOnlyList<DesktopIconTarget> targets = [], rollback = [];
         IReadOnlyList<DesktopIconTarget> Plan(DesktopIconSnapshot snapshot)
@@ -26,7 +27,7 @@ public sealed class IconLayoutTransaction(IDesktopIconService icons)
             DesktopIconSnapshot snapshot;
             if (icons is IDesktopDropReconciler native)
             {
-                await native.ReconcileDropAsync(Plan, cancellationToken);
+                await native.ReconcileDropAsync(Plan, cancellationToken, positionScope);
                 snapshot = await ReadVerifiedAsync(targets, cancellationToken);
             }
             else

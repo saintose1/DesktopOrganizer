@@ -119,34 +119,31 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
         try { var pointer = _host.ReadHoverPointer(); OnHoverPointer(pointer.Point, pointer.OnDesktop); }
         catch (Exception error) { _logger.LogDebug(error, "Hover pointer unavailable"); }
     }
-    private const double PrewarmMargin = 60, PrewarmApproach = 140;
     private void OnHoverPointer(DesktopPoint point, bool onDesktop)
     {
         if (_disposed || !_started) return;
         var enabled = _settings?.AutoExpandOnHover == true;
         var now = HoverNow;
         var busy = HoverBusy;
+        Guid? collapsedHeader = null;
         foreach (var fence in _fences)
         {
-            if (!_hoverStates.TryGetValue(fence.Id, out var hover))
-            {
-                if (!enabled) continue;
-                _hoverStates.Add(fence.Id, hover = new());
-            }
+            if (fence.IsSearch) continue;
             if (!_rendered.TryGetValue(fence.Id, out var rendered)) continue;
             var displayed = DisplayFence(fence);
             var x = point.X - fence.X; var y = point.Y - fence.Y;
             var inside = onDesktop && x >= 0 && x < displayed.Width && y >= 0 &&
                 y < FenceInteractionGeometry.VisibleHeight(displayed, rendered.Scale);
             var onHandle = inside && FenceInteractionGeometry.HitTest(displayed, x, y, rendered.Scale) != FenceHit.None;
-            // Approaching a collapsed group: Explorer needs ~0.6 s to re-add hidden items, so they are returned
-            // (still parked offscreen) before the hover expand, which then animates them with the Fence.
-            if (enabled && onDesktop && displayed.IsCollapsed && !busy && _icons is not null &&
-                x >= -PrewarmMargin * rendered.Scale && x < displayed.Width + PrewarmMargin * rendered.Scale &&
-                y >= 0 && y < (FenceInteractionGeometry.HeaderHeight + PrewarmApproach) * rendered.Scale)
-                _icons.PrewarmGroup(fence);
+            if (displayed.IsCollapsed && onHandle) collapsedHeader ??= fence.Id;
+            if (!_hoverStates.TryGetValue(fence.Id, out var hover))
+            {
+                if (!enabled) continue;
+                _hoverStates.Add(fence.Id, hover = new());
+            }
             hover.Observe(enabled, fence.IsCollapsed, inside, onHandle, busy, now);
         }
+        _icons?.UpdateConcealmentHeader(collapsedHeader);
         ScheduleHoverDeadline();
     }
     private void ScheduleHoverDeadline()
@@ -292,6 +289,11 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
     {
         if (_disposed || !_interactionAllowed || IsPresentingTransition || _gestureOriginal is not null) return;
         if (!_indices.TryGetValue(original.Id, out var index)) return;
+        if (original.IsSearch)
+        {
+            SearchRequested?.Invoke(new(original.X, original.Y + FenceInteractionGeometry.VisibleHeight(original, _host.GetScale(original))));
+            return;
+        }
         var displayedOriginal = original;
         _hoverStates.TryGetValue(original.Id, out var hover);
         hover?.ManualAction();
@@ -319,6 +321,7 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
                 await Dispatcher.Yield(DispatcherPriority.Background); // Present first; disk writes are outside the visual critical path.
                 return !_disposed && RequestStateChange(proposed);
             });
+            if (!_disposed && next.IsCollapsed) _icons?.KeepParkedForRepeatToggle(next.Id);
         }
         catch (Exception error) { hover?.Presented(temporaryExpanded); _logger.LogWarning(error, "Fence hide/show failed and original presentation was requested"); Publish(Connection with { Error = error.Message }); }
         finally
@@ -330,8 +333,13 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
             RefreshHoverPointer();
         }
     }
+    public event Action<DesktopPoint>? SearchRequested;
     private async Task PresentFenceTransitionAsync(Fence target)
     {
+#if DEBUG
+        var preparationStarted = Stopwatch.GetTimestamp();
+        long firstGeometryAt = 0;
+#endif
         if (_disposed || _animator.IsDisposed) throw new OperationCanceledException("Desktop presentation is shutting down.");
         var scale = _host.GetScale(target);
         var endHeight = FenceInteractionGeometry.VisibleHeight(target, scale);
@@ -349,6 +357,11 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
             {
                 var layout = projection.At(height) ?? throw new InvalidOperationException("Animation left the desktop area.");
                 nativeAnimation.Present(layout);
+#if DEBUG
+                if (firstGeometryAt == 0 &&
+                    (!_rendered.TryGetValue(target.Id, out var rendered) || rendered.Layout != layout))
+                    firstGeometryAt = Stopwatch.GetTimestamp();
+#endif
                 _rendered[target.Id] = (target, layout, scale, hover);
             }
             else { RenderFence(target, area, scale, live: true, visibleHeight: height); _host.FlushDamage(); }
@@ -370,10 +383,16 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
             var regions = _host.HeightGeometryUpdates; var regionTime = _host.HeightRegionMilliseconds;
             using (nativeAnimation = _host.BeginHeightAnimation(target, maximum.Value, scale, _renderer.Render(target, maximum.Value, scale, hover)))
             {
+#if DEBUG
+                var iconPreparationStarted = Stopwatch.GetTimestamp();
+#endif
                 await using var iconAnimation = _icons is null ? null : await _icons.BeginAnimatedTransitionAsync(target,
                     startHeight <= FenceInteractionGeometry.HeaderHeight * scale + 1);
                 var frameRepaints = _host.RepaintCount;
                 var frameAllocations = _host.BitmapAllocationCount; var frameRasterizations = _renderer.HeaderRasterizations;
+#if DEBUG
+                var clockStarted = Stopwatch.GetTimestamp();
+#endif
                 if (iconAnimation is null) await _animator.AnimateAsync(startHeight, endHeight, seconds, Present);
                 else await _animator.AnimateFramesAsync(startHeight, endHeight, seconds, frame =>
                 {
@@ -386,6 +405,13 @@ public sealed class DesktopIntegrationService : IDesktopIntegration, IDisposable
                 });
 #if DEBUG
                 var metrics = _animator.LastMetrics;
+                _logger.LogInformation("Fence animation startup {Direction}: surface prep={Surface:F3}ms; icon prep={Icons:F3}ms; clock to first geometry={Clock:F3}ms; total to first geometry={Total:F3}ms; coupled={Coupled}",
+                    target.IsCollapsed ? "collapse" : "expand",
+                    Stopwatch.GetElapsedTime(preparationStarted, iconPreparationStarted).TotalMilliseconds,
+                    Stopwatch.GetElapsedTime(iconPreparationStarted, clockStarted).TotalMilliseconds,
+                    firstGeometryAt == 0 ? (double?)null : Stopwatch.GetElapsedTime(clockStarted, firstGeometryAt).TotalMilliseconds,
+                    firstGeometryAt == 0 ? (double?)null : Stopwatch.GetElapsedTime(preparationStarted, firstGeometryAt).TotalMilliseconds,
+                    iconAnimation is not null);
                 _logger.LogInformation("Fence animation {Direction}: clock=DWM presentation; duration={Duration:F2}s; frames={Frames}; fps={Fps:F1}; interval avg/max={Average:F2}/{Maximum:F2}ms; coalesced={Coalesced}; estimated missed cadence={Missed}; geometry updates={GeometryUpdates}; ULW={UlwCount}; ULW total={UlwTime:F3}ms; region total={RegionTime:F3}ms; explicit SetWindowPos=0 calls/0ms; Explorer redraws during frames={FrameRedraws}, whole transition={Redraws}; DIB allocations prepared/frame={PreparedAllocations}/{FrameAllocations}; WPF header rasterizations prepared/frame={PreparedRasterizations}/{FrameRasterizations}",
                     target.IsCollapsed ? "collapse" : "expand", seconds, metrics.Frames, metrics.Fps, metrics.AverageIntervalMs, metrics.MaximumIntervalMs,
                     metrics.CoalescedFrames, metrics.EstimatedMissedCadenceFrames, _host.HeightGeometryUpdates - regions, _host.BitmapPresentCount - presents,

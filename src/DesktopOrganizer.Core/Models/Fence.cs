@@ -15,13 +15,15 @@ public sealed record Fence
     public double Height { get; private init; }
     // Height is always the normal (expanded) height, including while collapsed.
     public bool IsCollapsed { get; private init; }
+    public bool IsSearch { get; }
     public ImmutableArray<DesktopIconAssignment> Icons { get; private init; } = [];
     public FenceAppearance Appearance { get; private init; }
     // File-name rules for new desktop items (see FenceAutoSort); empty for groups without rules.
     public ImmutableArray<string> AutoSort { get; private init; } = [];
 
     public Fence(Guid id, string name, double x, double y, double width, double height, bool isCollapsed = false,
-        IEnumerable<DesktopIconAssignment>? icons = null, FenceAppearance? appearance = null, IEnumerable<string>? autoSort = null)
+        IEnumerable<DesktopIconAssignment>? icons = null, FenceAppearance? appearance = null, IEnumerable<string>? autoSort = null,
+        bool isSearch = false)
     {
         if (id == Guid.Empty)
             throw new ArgumentException(Texts.T("Идентификатор группы не может быть пустым."), nameof(id));
@@ -35,10 +37,12 @@ public sealed record Fence
         Y = y;
         Width = width;
         Height = height;
-        IsCollapsed = isCollapsed;
+        IsSearch = isSearch;
+        IsCollapsed = isCollapsed || isSearch;
         Appearance = appearance ?? FenceAppearance.Default;
         if (icons is not null) Icons = ValidateIcons(icons);
         if (autoSort is not null) AutoSort = ValidateAutoSort(autoSort);
+        if (IsSearch && (!Icons.IsEmpty || !AutoSort.IsEmpty)) throw new ArgumentException("A search Fence cannot contain items or rules.");
     }
 
     public Fence WithBounds(double x, double y, double width, double height)
@@ -46,11 +50,21 @@ public sealed record Fence
         ValidateBounds(x, y, width, height);
         return this with { X = x, Y = y, Width = width, Height = height };
     }
-    public Fence ToggleCollapsed() => this with { IsCollapsed = !IsCollapsed };
-    public Fence WithIcons(IEnumerable<DesktopIconAssignment> icons) => this with { Icons = ValidateIcons(icons) };
+    public Fence ToggleCollapsed() => IsSearch ? this : this with { IsCollapsed = !IsCollapsed };
+    public Fence WithIcons(IEnumerable<DesktopIconAssignment> icons)
+    {
+        var assignments = ValidateIcons(icons);
+        if (IsSearch && !assignments.IsEmpty) throw new ArgumentException("A search Fence cannot contain items.", nameof(icons));
+        return this with { Icons = assignments };
+    }
     public Fence WithPresentation(string name, FenceAppearance appearance) => new(Id, name, X, Y, Width, Height, IsCollapsed, Icons,
-        appearance ?? throw new ArgumentNullException(nameof(appearance)), AutoSort);
-    public Fence WithAutoSort(IEnumerable<string> patterns) => this with { AutoSort = ValidateAutoSort(patterns) };
+        appearance ?? throw new ArgumentNullException(nameof(appearance)), AutoSort, IsSearch);
+    public Fence WithAutoSort(IEnumerable<string> patterns)
+    {
+        var rules = ValidateAutoSort(patterns);
+        if (IsSearch && !rules.IsEmpty) throw new ArgumentException("A search Fence cannot contain rules.", nameof(patterns));
+        return this with { AutoSort = rules };
+    }
     private static ImmutableArray<string> ValidateAutoSort(IEnumerable<string> patterns)
     {
         var result = patterns.ToImmutableArray();

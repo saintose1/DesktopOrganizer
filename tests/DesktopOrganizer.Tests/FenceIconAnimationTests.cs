@@ -134,12 +134,30 @@ public sealed class FenceIconAnimationTests
         var plan = Plan(target, snapshot, final, true); var buffer = new DesktopIconTarget[12];
         plan.Fill(0.25, false, buffer, new(target.X, target.Y + 54, target.Width, 79));
         Assert.Equal(parked, buffer);
-        plan.Fill(0.5, false, buffer, new(target.X, target.Y + 54, target.Width, 100));
-        for (var i = 0; i < 5; i++) Assert.Equal(new(final[i].Position.X, final[i].Position.Y - 6), buffer[i].Position);
+        plan.Fill(0.5, false, buffer, new(target.X, target.Y + 54, target.Width, 125));
+        for (var i = 0; i < 5; i++) Assert.Equal(new(final[i].Position.X, final[i].Position.Y + 20), buffer[i].Position);
         for (var i = 5; i < 12; i++) Assert.Equal(parked[i], buffer[i]);
         Assert.Throws<ArgumentException>(() => new FenceIconAnimationPlan(target, snapshot, final, Monitors, true, [], 54));
         Assert.Throws<ArgumentOutOfRangeException>(() => new FenceIconAnimationPlan(target, snapshot, final, Monitors, true, parked, double.NaN));
     }
+    [Fact]
+    public void FirstRowSlidesThroughVisiblePositionsBeforeSettling()
+    {
+        var (start, snapshot) = Seed(1, true);
+        var expanded = start.ToggleCollapsed();
+        var final = IconPlacement.Targets([expanded], Monitors, IconGridMetrics.Default);
+        var plan = Plan(expanded, snapshot, final, startIsCollapsed: true);
+        var buffer = new DesktopIconTarget[1];
+        var offsets = new List<double>();
+        foreach (var progress in new[] { 0.25, 0.50, 0.75, 1.0 })
+        {
+            var content = new DesktopBounds(expanded.X + 1, expanded.Y + 54, expanded.Width - 2, (expanded.Height - 55) * progress);
+            plan.Fill(progress, progress == 1, buffer, content);
+            offsets.Add(buffer[0].Position.Y - final[0].Position.Y);
+        }
+        Assert.Equal([30.0, 20.0, 10.0, 0.0], offsets);
+    }
+
     [Theory]
     [InlineData(1)][InlineData(5)][InlineData(12)]
     public void ShellParkingCanFinishBeforeLastFenceFrameButExpandCannotFinishEarly(int count)

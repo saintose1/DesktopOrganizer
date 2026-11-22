@@ -15,12 +15,21 @@ public static class IconPlacement
 
     public static DesktopPoint Normal(Fence fence, DesktopIconAssignment assignment) => new(fence.X + assignment.OffsetX, fence.Y + assignment.OffsetY);
 
-    public static IReadOnlyList<DesktopIconTarget> Targets(IReadOnlyList<Fence> fences, IReadOnlyList<DesktopArea> monitors, IconGridMetrics metrics)
+    public static IReadOnlyList<DesktopIconTarget> Targets(IReadOnlyList<Fence> fences, IReadOnlyList<DesktopArea> monitors, IconGridMetrics metrics,
+        Guid? onlyFence = null)
     {
         var result = new List<DesktopIconTarget>(); var slot = 0;
         foreach (var fence in fences)
-        foreach (var icon in fence.Icons)
-            result.Add(new(icon.StableId, fence.IsCollapsed ? Parking(monitors, slot++, metrics) : Normal(fence, icon)));
+        {
+            // Reserve slots while expanded so opening one fence never moves another fence's parked icons.
+            if (onlyFence is { } id && fence.Id != id) { slot += fence.Icons.Length; continue; }
+            foreach (var icon in fence.Icons)
+            {
+                result.Add(new(icon.StableId, fence.IsCollapsed ? Parking(monitors, slot, metrics) : Normal(fence, icon)));
+                slot++;
+            }
+            if (onlyFence.HasValue) break;
+        }
         return result;
     }
 

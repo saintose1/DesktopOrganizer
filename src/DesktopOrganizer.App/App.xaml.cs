@@ -24,6 +24,7 @@ public partial class App : Application
     private ILogger<App>? _logger;
     private Mutex? _instanceMutex;
     private bool _ownsMutex;
+    private ProgramSearchWindow? _searchWindow;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -94,7 +95,12 @@ public partial class App : Application
             if (!bool.TryParse(builder.Configuration["StartInTray"], out var startInTray) || !startInTray) tray.ShowWindow();
             // --NoDesktop=true opens only the window (GUI checks next to a running instance never touch Explorer).
             if (!bool.TryParse(builder.Configuration["NoDesktop"], out var noDesktop) || !noDesktop)
-                _host.Services.GetRequiredService<DesktopIntegrationService>().Start();
+            {
+                var desktop = _host.Services.GetRequiredService<DesktopIntegrationService>();
+                var programSearch = _host.Services.GetRequiredService<ProgramShortcutSearch>();
+                desktop.SearchRequested += anchor => Dispatcher.BeginInvoke(new Action(() => ShowProgramSearch(programSearch, anchor)));
+                desktop.Start();
+            }
             _logger.LogInformation("DesktopOrganizer started");
         }
         catch (Exception exception)
@@ -107,6 +113,14 @@ public partial class App : Application
                 MessageBoxImage.Error);
             Shutdown(1);
         }
+    }
+
+    private void ShowProgramSearch(ProgramShortcutSearch search, DesktopPoint anchor)
+    {
+        if (_searchWindow is not null) { _searchWindow.Activate(); return; }
+        _searchWindow = new ProgramSearchWindow(new ProgramSearchViewModel(search), anchor);
+        _searchWindow.Closed += (_, _) => _searchWindow = null;
+        _searchWindow.Show();
     }
 
     protected override void OnExit(ExitEventArgs e)

@@ -63,6 +63,12 @@ public sealed class FenceBitmapRenderer
                     new Rect(x, headerY + action.Y, action.Width, action.Height), 3, 3);
                 var center = new Point(x + action.Width / 2, headerY + header.Height / 2);
                 var pen = new Pen(Brush(appearance.TextColor), 1.5 * scale);
+                if (fence.IsSearch)
+                {
+                    drawing.DrawEllipse(null, pen, new(center.X - 2 * scale, center.Y - 2 * scale), 4 * scale, 4 * scale);
+                    drawing.DrawLine(pen, new(center.X + scale, center.Y + scale), new(center.X + 6 * scale, center.Y + 6 * scale));
+                    continue;
+                }
                 var direction = fence.IsCollapsed ? 1 : -1;
                 drawing.DrawLine(pen, new(center.X - 5 * scale, center.Y - direction * 2 * scale), new(center.X, center.Y + direction * 3 * scale));
                 drawing.DrawLine(pen, new(center.X, center.Y + direction * 3 * scale), new(center.X + 5 * scale, center.Y - direction * 2 * scale));

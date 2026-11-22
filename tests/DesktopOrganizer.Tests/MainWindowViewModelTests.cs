@@ -4,11 +4,52 @@ using DesktopOrganizer.Core.Storage;
 using DesktopOrganizer.Infrastructure.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using DesktopOrganizer.Core.Desktop;
+using DesktopOrganizer.Infrastructure;
 
 namespace DesktopOrganizer.Tests;
 
 public sealed class MainWindowViewModelTests
 {
+    [Fact]
+    public void SearchFenceIsOptionalAndRoundTripsWithoutCreatingDuplicates()
+    {
+        using var directory = new TestDirectory();
+        var store = new JsonFenceStore(directory.DirectoryPath, NullLogger<JsonFenceStore>.Instance);
+        using var model = new MainWindowViewModel(store, NullLogger<MainWindowViewModel>.Instance);
+        model.CreateCommand.Execute(null);
+        Assert.False(Assert.Single(model.Fences).IsSearch);
+        model.CreateSearchFenceCommand.Execute(null);
+        model.CreateSearchFenceCommand.Execute(null);
+        var saved = store.Load();
+        var search = Assert.Single(saved.Fences, fence => fence.IsSearch);
+        Assert.Equal(2, saved.Fences.Count);
+        Assert.True(search.IsCollapsed);
+        Assert.Equal(search, search.ToggleCollapsed());
+        Assert.Equal(FenceHit.Collapse, FenceInteractionGeometry.HitTest(search, search.Width - 16, 18, 1));
+        Assert.Throws<ArgumentException>(() => search.WithIcons([new("item", "Item", 0, 0)]));
+    }
+
+    [Fact]
+    public void ConfirmedSharedShortcutMoveKeepsGroupAndOffsets()
+    {
+        using var directory = new TestDirectory();
+        var shared = Directory.CreateDirectory(Path.Combine(directory.DirectoryPath, "shared")).FullName;
+        var personal = Directory.CreateDirectory(Path.Combine(directory.DirectoryPath, "personal")).FullName;
+        var source = Path.Combine(shared, "Demo.lnk");
+        File.WriteAllText(source, "fixture");
+        var existing = new Fence(Guid.NewGuid(), "Work", 10, 20, 300, 200, true, [new(source, "Demo", 21, 52)]);
+        var store = new FakeStore { Result = new([existing]) };
+        using var model = new MainWindowViewModel(store, NullLogger<MainWindowViewModel>.Instance,
+            sharedShortcuts: new SharedShortcutMigration(shared, personal, directory.DirectoryPath));
+        Assert.True(model.HasSharedShortcuts);
+        model.MoveSharedShortcuts(model.SharedShortcutPaths);
+        var saved = Assert.Single(store.Result.Fences);
+        Assert.Equal(existing.Id, saved.Id);
+        Assert.Equal(new DesktopIconAssignment(Path.Combine(personal, "Demo.lnk"), "Demo", 21, 52), Assert.Single(saved.Icons));
+        Assert.Equal(saved, model.SelectedFence);
+        Assert.False(model.HasSharedShortcuts);
+    }
+
     [Fact]
     public void AppearancePreviewIsLiveButSavesOneSnapshotForManySliderChanges()
     {

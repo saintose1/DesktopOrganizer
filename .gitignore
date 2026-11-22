@@ -58,6 +58,9 @@ settings.json
 settings.json.*
 parked-icons.json
 parked-icons.json.*
+hidden-icons.json
+hidden-icons.json.*
+shared-shortcut-backups/
 desktop-presentation.json
 desktop-presentation.json.*
 appsettings.local.json

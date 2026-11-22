@@ -6,9 +6,13 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using DesktopOrganizer.App.Desktop;
+using DesktopOrganizer.App.Themes;
+using DesktopOrganizer.App.ViewModels;
+using DesktopOrganizer.App.Views;
 using DesktopOrganizer.Core.Desktop;
 using DesktopOrganizer.Core.Models;
 using DesktopOrganizer.Infrastructure.Interop;
+using DesktopOrganizer.Infrastructure;
 using DesktopOrganizer.Infrastructure.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -59,10 +63,18 @@ internal static class ExplorerStabilitySmoke
         string? parentPresentation = null;
         DesktopArea sample = default;
         Exception? scenarioFailure = null;
+        var canConcealFixtures = false;
         try
         {
             var paths = Enumerable.Range(0, 3).Select(CreateOwned).ToArray();
             var snapshot = await Healthy(native, current => paths.All(path => Find(current, path) is not null));
+            var animationIds = paths.Take(2).ToHashSet(FenceIconLayout.IdentityComparer);
+            trace.Begin();
+            var animationItems = await native.ReadAnimationItemsAsync(animationIds);
+            Check(animationItems.Error is null && animationItems.Icons.SequenceEqual(snapshot.Icons.Where(i => animationIds.Contains(i.StableId))) &&
+                animationItems.Metrics == snapshot.Metrics && trace.Snapshot.Any(p => p.Stage == "Animation.snapshot.scoped" && p.Count == 2),
+                "Scoped animation read refreshed exactly two real positions and glyph bounds, preserving desktop metrics");
+            trace.Complete("scoped animation inventory");
             trace.Begin();
             await native.ReconcileDropAsync(_ => []);
             Check(trace.Snapshot.Any(p => p.Stage == "Drop.positions.cached"), "Stable drop refreshed actual positions using retained Shell identities");
@@ -78,8 +90,44 @@ internal static class ExplorerStabilitySmoke
                 trace.Complete("inventory fallback / no positioning");
                 DeleteOwned(cachePath);
                 await Healthy(verifier, current => Find(current, cachePath) is null);
+                trace.Begin();
+                var refreshedItems = await native.ReadAnimationItemsAsync(animationIds);
+                Check(refreshedItems.Error is null && refreshedItems.Icons.Count == 2 &&
+                    trace.Snapshot.Any(p => p.Stage == "Animation.snapshot.fullFallback"),
+                    "Animation snapshot detected changed desktop inventory and used the full validation fallback");
+                trace.Complete("animation inventory fallback");
                 await native.ReconcileDropAsync(current =>
                 { Check(Find(current, cachePath) is null, "Deleted identity cannot survive a drop cache refresh"); return []; });
+            }
+            var start = animationItems.Icons.Select(icon => new DesktopIconTarget(icon.StableId, icon.Position)).ToArray();
+            var moved = start.Select(target => target with { Position = target.Position with { Y = target.Position.Y + 12 } }).ToArray();
+            await using (var animation = await native.BeginAnimationAsync(start, moved))
+            {
+                await animation.PositionAsync([moved[1], moved[0]]);
+                await animation.PositionAsync([start[0]]);
+                await animation.CompleteFrameAsync();
+                var after = await Healthy(native);
+                Check(IconPlacement.AtTargets(after, [start[0], moved[1]]),
+                    "A one-item frame after a two-item frame only positions the supplied Shell identity");
+                await animation.PositionAsync(start);
+            }
+            using (var revealer = new DesktopIconService(new SmokeLogger<DesktopIconService>(diagnosticsPath),
+                new SmokeLogger<DesktopDiscovery>(diagnosticsPath), trace, Path.Combine(directory, HiddenItemsRecovery.JournalName)))
+            {
+                if ((await revealer.ConcealAsync([start[0].StableId])).Count != 0)
+                {
+                    canConcealFixtures = true;
+                    await Healthy(native, current => Find(current, paths[0]) is null);
+                    trace.Begin();
+                    var redraws = revealer.PositionCounters.RedrawCompletions;
+                    await revealer.RevealAsync([(start[0].StableId, start[0].Position)]);
+                    Check(IconPlacement.AtTargets(await Healthy(native), [start[0]]),
+                        "Reveal placed a hidden fixture at its target before returning");
+                    Check(trace.Snapshot.Any(p => p.Stage == "Reveal.inventoryReads" && p.Count > 0) &&
+                        revealer.PositionCounters.RedrawCompletions == redraws + 1,
+                        "Reveal confirmed Shell membership and completed redraw once");
+                    trace.Complete("hidden fixture reveal");
+                }
             }
             Check(host.Connect(), "Validated real Explorer host available");
             observedHandles = host.Handles;
@@ -140,6 +188,27 @@ internal static class ExplorerStabilitySmoke
             fences = [fences[0].WithIcons([fences[0].Icons[0]]),
                 FenceIconLayout.Arrange(fences[1].WithIcons([fences[0].Icons[1]]), coordinator.Metrics, host.GetScale(fences[1]))];
             store.Save(fences.ToArray()); desktop.SetFences(fences); await Positions();
+
+            var toggle = typeof(Win32DesktopHost).GetMethod("NotifyCollapse", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .CreateDelegate<Action<Fence>>(host);
+            var neighbor = Find(await Healthy(native), paths[2])!;
+            foreach (var collapsed in new[] { true, false })
+            {
+                trace.Begin();
+                toggle(fences[0]);
+                await Wait(() => !desktop.IsPresentingTransition && fences[0].IsCollapsed == collapsed);
+                var writes = trace.Snapshot.Where(p => p.Stage == "Animation.SelectAndPositionItems.begin").ToArray();
+                Check(writes.Length > 0 && writes.All(p => p.Count == 1), "Animated Shell batches position only the transitioning Fence item");
+                Check(trace.Snapshot.Count(p => p.Stage == "Animation.snapshot.scoped" && p.Count == 1) == 2,
+                    "Transition preparation and final verification both read just one real Explorer item");
+                Check(!trace.Snapshot.Any(p => p.Stage == "Animation.snapshot.fullFallback" || p.Stage == "Verify.correct"),
+                    "Verified transition needs neither a full desktop read nor a corrective Shell move");
+                trace.Complete(collapsed ? "isolated collapse" : "isolated expand");
+                var presented = await Healthy(native);
+                Check(Find(presented, paths[2])?.Position == neighbor.Position, "Neighbor's real Explorer icon kept its parked coordinates throughout the transition");
+                Check(IconPlacement.AtTargets(presented, IconPlacement.Targets(fences, host.GetMonitorAreas(), presented.Metrics)),
+                    "Both Fences retained their expected real Explorer positions");
+            }
             var before = fences.ToArray();
             var expected = IconPlacement.Targets(before, host.GetMonitorAreas(), coordinator.Metrics);
             var persisted = File.ReadAllText(store.FilePath);
@@ -169,6 +238,7 @@ internal static class ExplorerStabilitySmoke
             counters = native.PositionCounters;
             selection = new DesktopSelection([ordinary.StableId], ordinary.StableId)
                 { InitialPositions = [new(ordinary.StableId, dropPoint)] };
+            trace.Begin();
             notify(new(ExplorerPointerPhase.Pressed, dropPoint, false, true) { SelectionSnapshot = Task.FromResult(selection) });
             notify(new(ExplorerPointerPhase.DragStarted, dropPoint, false, true));
             await native.PositionAsync([new(ordinary.StableId, secondDrop), new(parkedId, new(area.X + 50, area.Y + 50))]);
@@ -179,11 +249,16 @@ internal static class ExplorerStabilitySmoke
             Check(Find(snapshot, ordinaryPath)!.Position == secondDrop, "Ordinary dragged item retained its user's drop point during parking restoration");
             Check(native.PositionCounters.Batches - counters.Batches == 2,
                 "One simulated Explorer batch plus one parking repair batch; no general Fence relayout");
+            Check(trace.Snapshot.Any(point => point.Stage == "Drop.positions.scopedParking" && point.Count == 1),
+                "Ordinary drop reads only the collapsed group's position before its visual repair");
+            trace.Complete("ordinary drop / scoped parking repair");
             Check(before.SequenceEqual(fences) && File.ReadAllText(store.FilePath) == persisted,
                 "Parking repair preserved assignments and did not write Fence JSON");
             await Capture("after-ordinary-move");
             await desktop.PrepareExitAsync(); desktop.Dispose(); desktop = null;
             await Capture("after-graceful-exit"); CompositionState("after-graceful-exit");
+            if (canConcealFixtures) await CheckConcealedGroupsAsync(fences[0], fences[1], ordinaryPath);
+            else Console.WriteLine("SKIP: Explorer displays hidden test fixtures.");
             Console.WriteLine("PASS: Shell/API smoke completed. This was not physical OLE, double-click, marquee, uninstall, hover or animation verification.");
             Console.WriteLine("Smoke evidence: " + directory);
         }
@@ -223,6 +298,89 @@ internal static class ExplorerStabilitySmoke
             });
             foreach (var error in cleanupErrors) Console.Error.WriteLine("CLEANUP WARNING: " + error.Message);
             if (scenarioFailure is null && cleanupErrors.Count > 0) throw new AggregateException("Smoke cleanup was incomplete.", cleanupErrors);
+        }
+        async Task CheckConcealedGroupsAsync(Fence first, Fence second, string ordinaryPath)
+        {
+            var protectionDirectory = Path.Combine(directory, "concealed");
+            Directory.CreateDirectory(protectionDirectory);
+            using var workspace = new DesktopIconService(new SmokeLogger<DesktopIconService>(diagnosticsPath),
+                new SmokeLogger<DesktopDiscovery>(diagnosticsPath), trace, Path.Combine(protectionDirectory, HiddenItemsRecovery.JournalName));
+            using var protectionHost = new Win32DesktopHost(new(new SmokeLogger<DesktopDiscovery>(diagnosticsPath)),
+                new SmokeLogger<Win32DesktopHost>(diagnosticsPath), Path.Combine(protectionDirectory, "desktop-presentation.json"));
+            using var protection = new DesktopIntegrationService(protectionHost, new FenceBitmapRenderer(),
+                new SmokeLogger<DesktopIntegrationService>(diagnosticsPath), workspace,
+                new SmokeLogger<DesktopIconCoordinator>(diagnosticsPath),
+                recoveryStore: new JsonIconRecoveryStore(protectionDirectory, NullLogger<JsonIconRecoveryStore>.Instance));
+            var search = new Fence(Guid.NewGuid(), "Search probe", second.X, second.Y + 140, 300, 200, isSearch: true);
+            var groups = new[] { first.ToggleCollapsed(), second, search };
+            protection.StateChangeRequested += (_, request) =>
+            {
+                groups = request.Fences.ToArray();
+                protection.SetFences(groups);
+                request.Accepted = true;
+            };
+            var hidden = groups.SelectMany(f => f.Icons).Select(icon => icon.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
+            var coordinator = (DesktopIconCoordinator)typeof(DesktopIntegrationService)
+                .GetField("_icons", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(protection)!;
+            var notify = typeof(DesktopIconCoordinator).GetMethod("OnExplorerPointer", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .CreateDelegate<Action<ExplorerPointerEvent>>(coordinator);
+            protection.SetFences(groups);
+            protection.Start();
+            try
+            {
+                DesktopPoint? searchAnchor = null;
+                protection.SearchRequested += anchor => searchAnchor = anchor;
+                var animate = typeof(Win32DesktopHost).GetMethod("NotifyCollapse", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .CreateDelegate<Action<Fence>>(protectionHost);
+                animate(search);
+                Check(searchAnchor is not null && !protection.IsPresentingTransition && groups[2].IsCollapsed,
+                    "The search Fence's native header action requests the search popup without expanding a group");
+                await Healthy(workspace, current => hidden.IsSubsetOf(workspace.Concealed) &&
+                    !current.Icons.Any(icon => hidden.Contains(icon.StableId)));
+                for (var drag = 0; drag < 2; drag++)
+                {
+                    var ordinary = Find(await Healthy(workspace), ordinaryPath)!;
+                    var target = new DesktopPoint(ordinary.Position.X + (drag == 0 ? -40 : 40), ordinary.Position.Y);
+                    var selected = new DesktopSelection([ordinary.StableId], ordinary.StableId)
+                        { InitialPositions = [new(ordinary.StableId, ordinary.Position)] };
+                    notify(new(ExplorerPointerPhase.Pressed, ordinary.Position, false, true) { SelectionSnapshot = Task.FromResult(selected) });
+                    notify(new(ExplorerPointerPhase.DragStarted, ordinary.Position, false, true));
+                    var batches = workspace.PositionCounters.Batches;
+                    await workspace.PositionAsync([new(ordinary.StableId, target)]);
+                    notify(new(ExplorerPointerPhase.Released, target, false, true));
+                    await Wait(() => coordinator.ExplorerPhase == ExplorerGesturePhase.Idle);
+                    if (drag == 0) await Task.Delay(2800); // Cross the old quiet-return threshold including the Shell update.
+                    var after = await Healthy(workspace);
+                    Check(hidden.IsSubsetOf(workspace.Concealed) && !after.Icons.Any(icon => hidden.Contains(icon.StableId)),
+                        "All writable collapsed fixtures stayed absent before the next ordinary drag");
+                    Check(workspace.PositionCounters.Batches == batches + 1, "Only the ordinary item was positioned");
+                }
+                var frames = 0;
+                coordinator.FramePresented += (_, _) => frames++;
+                animate(groups[0]);
+                await Wait(() => !protection.IsPresentingTransition && !groups[0].IsCollapsed);
+                Check(frames >= 2 && workspace.Concealed.Count == groups[1].Icons.Length,
+                    "A requested expand restores and animates only the selected group's icons");
+                Check(IconPlacement.AtTargets(await Healthy(workspace),
+                    IconPlacement.Targets(groups, protectionHost.GetMonitorAreas(), coordinator.Metrics, groups[0].Id)),
+                    "Expanded group retained its final positions");
+                var catalog = new ProgramShortcutSearch();
+                var entry = catalog.Load().FirstOrDefault() ?? throw new InvalidOperationException("No Windows shortcut available to test search.");
+                ThemeManager.Apply("dark");
+                Application.Current.Resources.MergedDictionaries.Add(new() { Source =
+                    new Uri("/DesktopOrganizer.App;component/Themes/ForestControls.xaml", UriKind.Relative) });
+                var searchModel = new ProgramSearchViewModel(catalog) { Query = entry.Name };
+                var popup = new ProgramSearchWindow(searchModel, searchAnchor!.Value);
+                try
+                {
+                    popup.Show();
+                    await Wait(() => searchModel.Results.Any(result => result.Name == entry.Name));
+                    Check(popup.IsVisible && popup.FindName("SearchBox") is System.Windows.Controls.TextBox &&
+                        searchModel.OpenCommand.CanExecute(null), "The real WPF search popup shows matching Windows shortcuts");
+                }
+                finally { if (popup.IsVisible) popup.Close(); }
+            }
+            finally { await protection.PrepareExitAsync(); }
         }
         string CreateOwned(int index)
         {

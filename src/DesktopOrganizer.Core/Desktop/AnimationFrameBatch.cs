@@ -4,7 +4,7 @@ namespace DesktopOrganizer.Core.Desktop;
 /// Which items one animation frame sends to Explorer. Each Shell positioning call costs about 3 ms plus ~0.17 ms per
 /// item, and a frame waits for it; items that are already where Explorer has them (still parked, or settled) are
 /// skipped, so frames with few moving items reach the screen sooner. The final frame always sends the complete set,
-/// which re-asserts every exact position (including other groups' reindexed parking slots).
+/// which re-asserts the exact positions of the transitioning group.
 /// </summary>
 public static class AnimationFrameBatch
 {

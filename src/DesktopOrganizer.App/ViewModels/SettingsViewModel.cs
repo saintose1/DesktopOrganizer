@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using DesktopOrganizer.Core.Localization;
 using DesktopOrganizer.App.Commands;
 using DesktopOrganizer.App.Themes;
@@ -48,7 +50,7 @@ public sealed class SettingsViewModel : ObservableObject
     }
     public bool IsRussian { get => Texts.Language == Texts.Russian; set { if (value) SetLanguage(Texts.Russian); } }
     public bool IsEnglish { get => Texts.Language == Texts.English; set { if (value) SetLanguage(Texts.English); } }
-    /// <summary>Keep items of collapsed groups hidden while idle; off = instant expand (see ConcealmentPolicy).</summary>
+    /// <summary>Hide icons even while the pointer remains over a just-collapsed group.</summary>
     public bool ConcealCollapsedItems
     {
         get => _currentPreferences.ConcealCollapsedItems;
@@ -98,10 +100,16 @@ public sealed class SettingsViewModel : ObservableObject
             OnPropertyChanged();
         }
     }
+    private string? _feedbackError;
+    public string? FeedbackError { get => _feedbackError; private set => SetProperty(ref _feedbackError, value); }
+    public RelayCommand ReportBugCommand { get; }
     public RelayCommand RefreshCommand { get; }
     public SettingsViewModel(IStartupRegistration startup, ILogger<SettingsViewModel> logger, IAppPreferencesStore? preferences = null)
     {
-        _startup = startup; _logger = logger; _preferences = preferences; RefreshCommand = new(Refresh); Refresh();
+        _startup = startup; _logger = logger; _preferences = preferences;
+        ReportBugCommand = new(OpenBugReport);
+        RefreshCommand = new(Refresh);
+        Refresh();
     }
     public void Refresh()
     {
@@ -127,5 +135,22 @@ public sealed class SettingsViewModel : ObservableObject
     {
         _logger.LogError(error, "Could not read or update current-user autostart");
         Error = Texts.T("Не удалось изменить или прочитать автозапуск. ") + error.Message;
+    }
+    private void OpenBugReport()
+    {
+        try
+        {
+            using var browser = Process.Start(new ProcessStartInfo(
+                "https://github.com/saintose1/DesktopOrganizer/issues/new?template=bug_report.yml")
+            {
+                UseShellExecute = true
+            });
+            FeedbackError = null;
+        }
+        catch (Win32Exception error)
+        {
+            _logger.LogWarning(error, "Could not open the GitHub bug report form");
+            FeedbackError = Texts.T("Не удалось открыть браузер. Форму можно найти на GitHub во вкладке Issues.");
+        }
     }
 }

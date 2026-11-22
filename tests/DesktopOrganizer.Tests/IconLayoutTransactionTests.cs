@@ -152,7 +152,8 @@ public sealed class IconLayoutTransactionTests
     {
         public bool Frozen { get; private set; }
         public int PlannedCalls { get; private set; }
-        public async Task ReconcileDropAsync(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout, CancellationToken cancellationToken = default)
+        public async Task ReconcileDropAsync(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout,
+            CancellationToken cancellationToken = default, IReadOnlySet<string>? positionScope = null)
         {
             PlannedCalls++;
             var targets = layout(await ReadAsync(cancellationToken));

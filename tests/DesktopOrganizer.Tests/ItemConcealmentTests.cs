@@ -7,6 +7,52 @@ namespace DesktopOrganizer.Tests;
 public sealed class ItemConcealmentTests
 {
     [Fact]
+    public async Task FailedConcealmentJournalDoesNotHideOrRegisterItems()
+    {
+        var directory = Directory.CreateTempSubdirectory("DesktopOrganizer-conceal-");
+        var file = Path.Combine(directory.FullName, "item.lnk");
+        var blocked = Path.Combine(directory.FullName, "blocked");
+        File.WriteAllText(file, "fixture");
+        File.WriteAllText(blocked, "blocks journal directory creation");
+        try
+        {
+            using var service = new DesktopIconService(NullLogger<DesktopIconService>.Instance,
+                NullLogger<DesktopDiscovery>.Instance, null, Path.Combine(blocked, HiddenItemsRecovery.JournalName));
+
+            var error = await Record.ExceptionAsync(() => service.ConcealAsync([file], TestContext.Current.CancellationToken));
+
+            // When Windows shows hidden items the service skips the operation entirely.
+            if (error is not null) Assert.IsAssignableFrom<IOException>(error);
+            Assert.Empty(service.Concealed);
+            Assert.False(File.GetAttributes(file).HasFlag(FileAttributes.Hidden));
+        }
+        finally { directory.Delete(true); }
+    }
+
+    [Fact]
+    public async Task RevealingDeletedItemClearsJournalWithoutRedrawingExplorer()
+    {
+        var directory = Directory.CreateTempSubdirectory("DesktopOrganizer-conceal-");
+        var file = Path.Combine(directory.FullName, "deleted.lnk");
+        var journal = Path.Combine(directory.FullName, HiddenItemsRecovery.JournalName);
+        File.WriteAllText(journal, System.Text.Json.JsonSerializer.Serialize(new[] { file }));
+        try
+        {
+            using var service = new DesktopIconService(NullLogger<DesktopIconService>.Instance,
+                NullLogger<DesktopDiscovery>.Instance, null, journal);
+            Assert.Contains(file, service.Concealed);
+            var before = service.PositionCounters;
+
+            await service.RevealAsync([(file, null)], TestContext.Current.CancellationToken);
+
+            Assert.Empty(service.Concealed);
+            Assert.Equal("[]", File.ReadAllText(journal));
+            Assert.Equal(before, service.PositionCounters);
+        }
+        finally { directory.Delete(true); }
+    }
+
+    [Fact]
     public async Task ConcealJournalsOwnedFilesAndSkipsVirtualAndAlreadyHiddenItems()
     {
         var directory = Directory.CreateTempSubdirectory("DesktopOrganizer-conceal-").FullName;

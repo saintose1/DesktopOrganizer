@@ -1,11 +1,13 @@
 using DesktopOrganizer.Core.Localization;
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.IO;
 using DesktopOrganizer.App.Commands;
 using DesktopOrganizer.Core.Models;
 using DesktopOrganizer.Core.Storage;
 using Microsoft.Extensions.Logging;
 using DesktopOrganizer.Core.Desktop;
+using DesktopOrganizer.Infrastructure;
 using System.Windows.Threading;
 
 namespace DesktopOrganizer.App.ViewModels;
@@ -20,6 +22,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private string _status = "", _error = "";
     private bool _canWrite;
     private readonly IDesktopIntegration? _desktop;
+    private readonly SharedShortcutMigration? _sharedShortcuts;
     private Fence? _interactionOriginal;
     private bool _updatingFromDesktop;
     private AppPage _page = AppPage.Overview;
@@ -98,15 +101,18 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public string AutoSort { get => _autoSort; set => SetProperty(ref _autoSort, value); }
     public RelayCommand SaveAutoSortCommand { get; }
     public RelayCommand CreateCommand { get; }
+    public RelayCommand CreateSearchFenceCommand { get; }
     public RelayCommand ApplyCommand { get; }
     public RelayCommand DeleteCommand { get; }
     public RelayCommand ShowDesktopCommand { get; }
 
-    public MainWindowViewModel(IFenceStore store, ILogger<MainWindowViewModel> logger, IDesktopIntegration? desktop = null, SettingsViewModel? settings = null)
+    public MainWindowViewModel(IFenceStore store, ILogger<MainWindowViewModel> logger, IDesktopIntegration? desktop = null,
+        SettingsViewModel? settings = null, SharedShortcutMigration? sharedShortcuts = null)
     {
         _store = store;
         _logger = logger;
         _desktop = desktop;
+        _sharedShortcuts = sharedShortcuts;
         Texts.LanguageChanged += () =>
         {
             OnPropertyChanged(nameof(Title)); OnPropertyChanged(nameof(ConnectionLabel)); OnPropertyChanged(nameof(IconStatus));
@@ -131,9 +137,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         RemoveRuleCommand = new(RemoveRule, parameter => CanEditRules && parameter is RuleRow);
         Fences = new ReadOnlyObservableCollection<Fence>(_fences);
         CreateCommand = new RelayCommand(Create, () => _canWrite && _interactionOriginal is null && _desktop?.IsPresentingTransition != true);
+        CreateSearchFenceCommand = new RelayCommand(CreateSearchFence, () => CreateCommand.CanExecute(null));
         ApplyCommand = new RelayCommand(Apply, () => CanEdit);
         DeleteCommand = new RelayCommand(Delete, () => CanEdit);
-        SaveAutoSortCommand = new RelayCommand(SaveAutoSort, () => CanEdit);
+        SaveAutoSortCommand = new RelayCommand(SaveAutoSort, () => CanEdit && SelectedFence?.IsSearch == false);
         ShowDesktopCommand = new RelayCommand(() => _desktop?.ShowDesktop(), () => _desktop?.Connection.Connected == true);
         var result = store.Load();
         _canWrite = result.CanWrite;
@@ -146,6 +153,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             if (!_updatingFromDesktop) _desktop?.SetFences(_fences.ToArray());
             if (IsOverviewPage) RefreshOverview();
             if (IsRulesPage) RefreshRules();
+            OnPropertyChanged(nameof(HasSharedShortcuts));
         };
         if (_desktop is not null) _desktop.ConnectionChanged += (_, _) =>
         {
@@ -176,6 +184,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedFence = fence;
     }
 
+    private void CreateSearchFence()
+    {
+        if (!FlushAppearanceChanges()) return;
+        if (_fences.FirstOrDefault(fence => fence.IsSearch) is { } existing) { SelectedFence = existing; return; }
+        var fence = new Fence(Guid.NewGuid(), Texts.T("Поиск программ"), 48, 120, 330, 200, isSearch: true);
+        if (!TrySave(_fences.Append(fence).ToArray())) return;
+        _fences.Add(fence);
+        SelectedFence = fence;
+    }
+
     private void Apply()
     {
         if (!FlushAppearanceChanges()) return;
@@ -184,7 +202,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         try
         {
             replacement = new Fence(SelectedFence.Id, Name,
-                Parse(X, "X"), Parse(Y, "Y"), Parse(Width, Texts.T("Ширина")), Parse(Height, Texts.T("Высота")), SelectedFence.IsCollapsed, SelectedFence.Icons, SelectedFence.Appearance, SelectedFence.AutoSort);
+                Parse(X, "X"), Parse(Y, "Y"), Parse(Width, Texts.T("Ширина")), Parse(Height, Texts.T("Высота")), SelectedFence.IsCollapsed, SelectedFence.Icons, SelectedFence.Appearance, SelectedFence.AutoSort, SelectedFence.IsSearch);
             replacement = _desktop?.NormalizeFence(SelectedFence, replacement) ?? replacement;
         }
         catch (ArgumentException exception) { Error = exception.Message; return; }
@@ -207,6 +225,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     /// <summary>Replaces the auto-sort masks of one group: save first, then update the model (see AGENTS.md).</summary>
     private bool ApplyAutoSort(Fence target, IReadOnlyList<string> patterns)
     {
+        if (target.IsSearch) return false;
         var index = _fences.IndexOf(target);
         if (index < 0) return false;
         var replacement = target.WithAutoSort(patterns);
@@ -306,17 +325,22 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
             return;
         }
+        ApplySavedFences(request.Fences);
+        request.Accepted = true;
+    }
+
+    private void ApplySavedFences(IReadOnlyList<Fence> fences)
+    {
         _appearanceOriginal = null; _appearanceSaveTimer.Stop();
         var selectedId = SelectedFence?.Id;
         _updatingFromDesktop = true;
         try
         {
             for (var i = 0; i < _fences.Count; i++)
-                if (_fences[i] != request.Fences[i]) _fences[i] = request.Fences[i];
+                if (_fences[i] != fences[i]) _fences[i] = fences[i];
             SelectedFence = _fences.FirstOrDefault(f => f.Id == selectedId);
         }
         finally { _updatingFromDesktop = false; }
-        request.Accepted = true;
         _desktop?.SetFences(_fences.ToArray());
     }
 
@@ -341,6 +365,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         OnPropertyChanged(nameof(CanEdit));
         CreateCommand.NotifyCanExecuteChanged();
+        CreateSearchFenceCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(HasSharedShortcuts));
         ApplyCommand.NotifyCanExecuteChanged();
         DeleteCommand.NotifyCanExecuteChanged();
         SaveAutoSortCommand.NotifyCanExecuteChanged();

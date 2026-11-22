@@ -21,17 +21,19 @@ public sealed class FenceIconAnimationPlan
         _start = new DesktopIconTarget[icons.Length]; _end = new DesktopIconTarget[icons.Length];
         _parking = new DesktopIconTarget[icons.Length]; _glyphOffsets = new DesktopBounds[icons.Length];
         FinalTargets = finalTargets.ToArray();
-        var slide = icons.Length == 0 ? 0 : Math.Clamp(icons.Min(i =>
+        var collapseSlide = icons.Length == 0 ? 0 : Math.Clamp(icons.Min(i =>
             IconPlacement.Normal(target, i).Y + matched[i.StableId].Bounds.Y - matched[i.StableId].Position.Y - target.Y - headerHeight),
             0, icons.Max(i => matched[i.StableId].Bounds.Height));
+        // Enter from the opening edge so the first row can visibly slide without crossing the header.
+        var expandSlide = icons.Length == 0 ? 0 : icons.Max(i => matched[i.StableId].Bounds.Height) / 2;
         for (var i = 0; i < icons.Length; i++)
         {
             var item = matched[icons[i].StableId]; var normal = IconPlacement.Normal(target, icons[i]);
             if (!parking.TryGetValue(item.StableId, out _parking[i]))
                 throw new ArgumentException("Each animated item requires a parking position.", nameof(parkingTargets));
             // Keep row spacing and the entire glyph below the interactive header.
-            var localHidden = new DesktopPoint(normal.X, normal.Y - slide);
             var onScreen = monitors.Any(area => new DesktopBounds(area.X, area.Y, area.Width, area.Height).Contains(item.Position));
+            var localHidden = normal with { Y = normal.Y + (target.IsCollapsed ? -collapseSlide : expandSlide) };
             _start[i] = new(item.StableId, startIsCollapsed || !onScreen ? localHidden : item.Position);
             _end[i] = new(item.StableId, target.IsCollapsed ? localHidden : normal);
             _glyphOffsets[i] = item.Bounds with { X = item.Bounds.X - item.Position.X, Y = item.Bounds.Y - item.Position.Y };
@@ -43,7 +45,7 @@ public sealed class FenceIconAnimationPlan
         if (!double.IsFinite(easedProgress)) throw new ArgumentException("Invalid animation progress.", nameof(easedProgress));
         var progress = Math.Clamp(easedProgress, 0, 1);
         // Easing can round to 1 before elapsed time reaches the final frame.
-        // Only the shared clock's final frame may include other groups' reindexed parking slots.
+        // Only the shared clock's final frame commits the exact final positions.
         var count = finalFrame ? FinalTargets.Count : Count;
         if (targets.Length < count) throw new ArgumentException("Animation buffer is too small.", nameof(targets));
         for (var i = 0; i < count; i++)
@@ -76,6 +78,7 @@ public sealed class FenceIconAnimationPlan
 
 public interface IDesktopIconAnimationPositioner
 {
+    Task<DesktopIconSnapshot> ReadAnimationItemsAsync(IReadOnlySet<string> itemIds, CancellationToken cancellationToken = default);
     Task<IDesktopIconAnimationSession> BeginAnimationAsync(IReadOnlyList<DesktopIconTarget> initialTargets,
         IReadOnlyList<DesktopIconTarget> finalTargets, CancellationToken cancellationToken = default);
 }

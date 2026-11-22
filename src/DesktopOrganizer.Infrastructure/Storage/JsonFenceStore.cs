@@ -106,16 +106,19 @@ public sealed class JsonFenceStore(string dataDirectory, ILogger<JsonFenceStore>
         public required double Width { get; init; }
         public required double Height { get; init; }
         public bool IsCollapsed { get; init; } // Optional for files written by earlier versions.
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+        public bool IsSearch { get; init; }
         public FenceAppearance? Appearance { get; init; } // Missing in legacy JSON: use original visuals.
         public IconDocument[] Icons { get; init; } = []; // Migration of both previous milestones.
         public string[]? AutoSort { get; init; } // Missing in files written before auto-sort rules.
         public Fence ToFence() => new(Id, Name, X, Y, Width, Height, IsCollapsed,
             (Icons ?? throw new JsonException("Icons cannot be null.")).Select(i =>
-                (i ?? throw new JsonException("Icon assignment cannot be null.")).ToAssignment()), Appearance, AutoSort ?? []);
+                (i ?? throw new JsonException("Icon assignment cannot be null.")).ToAssignment()), Appearance, AutoSort ?? [], IsSearch);
         public static FenceDocument FromFence(Fence fence) => new()
         {
             Id = fence.Id, Name = fence.Name, X = fence.X, Y = fence.Y, Width = fence.Width, Height = fence.Height,
             IsCollapsed = fence.IsCollapsed,
+            IsSearch = fence.IsSearch,
             Appearance = fence.Appearance,
             AutoSort = fence.AutoSort.IsEmpty ? null : fence.AutoSort.ToArray(),
             Icons = fence.Icons.Select(i => new IconDocument { StableId = i.StableId, DisplayName = i.DisplayName, OffsetX = i.OffsetX, OffsetY = i.OffsetY }).ToArray()

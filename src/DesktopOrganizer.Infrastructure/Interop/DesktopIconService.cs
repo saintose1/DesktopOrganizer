@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using DesktopOrganizer.Core.Localization;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
@@ -73,12 +74,15 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
     public Task<IDesktopIconAnimationSession> BeginAnimationAsync(IReadOnlyList<DesktopIconTarget> initialTargets,
         IReadOnlyList<DesktopIconTarget> finalTargets, CancellationToken cancellationToken = default) =>
         _worker.Run<IDesktopIconAnimationSession>(() => new AnimationSession(this, GetSession(), initialTargets, finalTargets), cancellationToken);
+    public Task<DesktopIconSnapshot> ReadAnimationItemsAsync(IReadOnlySet<string> itemIds, CancellationToken cancellationToken = default) =>
+        _worker.Run(() => GetSession().ReadAnimationItems(itemIds, cancellationToken), cancellationToken);
     private sealed class AnimationSession : IDesktopIconAnimationSession
     {
         private readonly DesktopIconService _owner;
         private readonly Session _session;
         private readonly Dictionary<string, nint> _clones = new(FenceIconLayout.IdentityComparer);
-        private readonly Batch _initial, _final;
+        private readonly nint[] _framePidls;
+        private readonly NativeMethods.Point[] _framePositions;
         private readonly DesktopCoordinates _coordinates;
         private readonly nint _dpiContext;
         private bool _disposed, _pendingRedraw;
@@ -88,27 +92,25 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
             _dpiContext = NativeMethods.GetWindowDpiAwarenessContext(session.Handles.Host);
             try
             {
-                _initial = Prepare(initial); _final = Prepare(final);
+                RetainIdentities(initial);
+                RetainIdentities(final);
+                _framePidls = new nint[_clones.Count];
+                _framePositions = new NativeMethods.Point[_clones.Count];
                 session.PrepareAnimationPositioning();
                 owner._animations.Add(this);
             }
             catch { FreeClones(); throw; }
         }
-        private Batch Prepare(IReadOnlyList<DesktopIconTarget> targets)
+        private void RetainIdentities(IReadOnlyList<DesktopIconTarget> targets)
         {
-            var batch = new Batch(targets.Count);
-            for (var i = 0; i < targets.Count; i++)
+            foreach (var target in targets)
             {
-                var id = targets[i].StableId;
-                if (!_clones.TryGetValue(id, out var clone))
-                {
-                    clone = NativeMethods.ILClone(_session.IdentityPidl(id));
-                    if (clone == 0) throw new OutOfMemoryException("Cannot retain Shell animation identities.");
-                    _clones.Add(id, clone);
-                }
-                batch.Ids[i] = id; batch.Pidls[i] = clone;
+                var id = target.StableId;
+                if (_clones.ContainsKey(id)) continue;
+                var clone = NativeMethods.ILClone(_session.IdentityPidl(id));
+                if (clone == 0) throw new OutOfMemoryException("Cannot retain Shell animation identities.");
+                _clones.Add(id, clone);
             }
-            return batch;
         }
         private void Validate()
         {
@@ -120,20 +122,23 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
             _owner._worker.Run(() =>
             {
                 Validate(); cancellationToken.ThrowIfCancellationRequested();
-                // The coordinator sends only the items that moved this frame: a subset of the prepared identities.
-                var batch = Matches(_initial, targets) ? _initial : Matches(_final, targets) ? _final : Subset(targets);
-                for (var i = 0; i < targets.Count; i++)
+                var count = targets.Count;
+                if (count == 0) return true;
+                if (count > _framePidls.Length) throw new InvalidOperationException("Too many items in the animation frame.");
+                for (var i = 0; i < count; i++)
                 {
-                    var point = _coordinates.ToView(targets[i].Position);
+                    var target = targets[i];
+                    if (!_clones.TryGetValue(target.StableId, out _framePidls[i]))
+                        throw new InvalidOperationException("Animation identities changed during a frame.");
+                    var point = _coordinates.ToView(target.Position);
                     if (!double.IsFinite(point.X) || !double.IsFinite(point.Y) || point.X < int.MinValue || point.X > int.MaxValue || point.Y < int.MinValue || point.Y > int.MaxValue)
                         throw new InvalidOperationException("Animation position is outside Shell coordinates.");
-                    batch.Positions[i] = new((int)Math.Round(point.X), (int)Math.Round(point.Y));
+                    _framePositions[i] = new((int)Math.Round(point.X), (int)Math.Round(point.Y));
                 }
-                if (targets.Count == 0) return true;
                 using var dpi = new DesktopDpiScope(_dpiContext);
                 _pendingRedraw = true;
-                _owner._trace?.Mark("Animation.SelectAndPositionItems.begin", targets.Count);
-                var result = _session.PositionAnimation(batch.Pidls, batch.Positions);
+                _owner._trace?.Mark("Animation.SelectAndPositionItems.begin", count);
+                var result = _session.PositionAnimation(count, _framePidls, _framePositions);
                 _owner._trace?.Mark("Animation.SelectAndPositionItems.end");
                 Marshal.ThrowExceptionForHR(result);
                 if (result != 0) throw new InvalidOperationException("Shell did not accept animation positions.");
@@ -168,36 +173,14 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
             finally { _pendingRedraw = false; _disposed = true; FreeClones(); _owner._animations.Remove(this); }
         }
         private void FreeClones() { foreach (var clone in _clones.Values) Marshal.FreeCoTaskMem(clone); _clones.Clear(); }
-        private Batch Subset(IReadOnlyList<DesktopIconTarget> targets)
-        {
-            var batch = new Batch(targets.Count);
-            for (var i = 0; i < targets.Count; i++)
-            {
-                if (!_clones.TryGetValue(targets[i].StableId, out var clone))
-                    throw new InvalidOperationException("Animation identities changed during a frame.");
-                batch.Ids[i] = targets[i].StableId; batch.Pidls[i] = clone;
-            }
-            return batch;
-        }
-        private static bool Matches(Batch batch, IReadOnlyList<DesktopIconTarget> targets)
-        {
-            if (batch.Ids.Length != targets.Count) return false;
-            for (var i = 0; i < targets.Count; i++) if (!FenceIconLayout.IdentityComparer.Equals(batch.Ids[i], targets[i].StableId)) return false;
-            return true;
-        }
-        private sealed class Batch(int count)
-        {
-            public readonly string[] Ids = new string[count];
-            public readonly nint[] Pidls = new nint[count];
-            public readonly NativeMethods.Point[] Positions = new NativeMethods.Point[count];
-        }
     }
     public Task<DesktopSelection> ReadSelectionAsync(DesktopPoint pressPoint, CancellationToken cancellationToken = default) =>
         _worker.Run(() => GetSession().Selection(pressPoint, cancellationToken), cancellationToken);
     public Task PositionDropAsync(IReadOnlyList<DesktopIconTarget> targets, CancellationToken cancellationToken = default) =>
         _worker.Run(() => { GetSession().Position(targets, cancellationToken, deferRedraw: true); return true; }, cancellationToken);
-    public Task ReconcileDropAsync(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout, CancellationToken cancellationToken = default) =>
-        _worker.Run(() => { GetSession().ReconcileDrop(layout, cancellationToken); return true; }, cancellationToken);
+    public Task ReconcileDropAsync(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout,
+        CancellationToken cancellationToken = default, IReadOnlySet<string>? positionScope = null) =>
+        _worker.Run(() => { GetSession().ReconcileDrop(layout, cancellationToken, positionScope); return true; }, cancellationToken);
     /// <summary>Diagnostic of the documented redraw lease only; never moves an item or synthesizes input.</summary>
     public Task<IReadOnlyList<string>> ProbeRedrawVisibilityAsync() => _worker.Run<IReadOnlyList<string>>(() => GetSession().ProbeRedrawVisibility());
     /// <summary>Checks real Shell selection enumeration; restores the original selected indices in finally.</summary>
@@ -227,8 +210,8 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
         private readonly ExplorerInteractionTrace? _trace;
         public DesktopCoordinates Coordinates => _coordinates;
         public nint IdentityPidl(string id) => _pidls.TryGetValue(id, out var pidl) ? pidl : throw new InvalidOperationException("Shell animation identity is missing.");
-        public int PositionAnimation(nint[] pidls, NativeMethods.Point[] positions)
-        { var result = _shell.View.SelectAndPositionItems((uint)pidls.Length, pidls, positions, 0x80000080); _positioned(); return result; }
+        public int PositionAnimation(int count, nint[] pidls, NativeMethods.Point[] positions)
+        { var result = _shell.View.SelectAndPositionItems((uint)count, pidls, positions, 0x80000080); _positioned(); return result; }
         public void CompleteAnimationRedraw() => SetRedraw(true);
         public void PrepareAnimationPositioning()
         {
@@ -356,7 +339,27 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
             try { return ShellFolderView.Name(pidl, 0x80028000); }
             finally { if (pidl != 0) Marshal.FreeCoTaskMem(pidl); }
         }
-        public DesktopIconSnapshot Read(CancellationToken cancellationToken)
+        public DesktopIconSnapshot ReadAnimationItems(IReadOnlySet<string> itemIds, CancellationToken cancellationToken)
+        {
+            _trace?.Mark("Animation.snapshot.begin", itemIds.Count);
+            try
+            {
+                if (_completeSnapshot is { } cached)
+                {
+                    var items = cached.Icons.Where(i => itemIds.Contains(i.StableId)).ToArray();
+                    if (items.Length == itemIds.Count && Read(cancellationToken, items) is { Error: null } scoped)
+                    {
+                        _trace?.Mark("Animation.snapshot.scoped", items.Length);
+                        return scoped;
+                    }
+                }
+                _trace?.Mark("Animation.snapshot.fullFallback");
+                var full = Read(cancellationToken);
+                return full with { Icons = full.Icons.Where(i => itemIds.Contains(i.StableId)).ToArray() };
+            }
+            finally { _trace?.Mark("Animation.snapshot.end"); }
+        }
+        public DesktopIconSnapshot Read(CancellationToken cancellationToken, IReadOnlyList<DesktopIcon>? scope = null)
         {
             using var dpi = new DesktopDpiScope(NativeMethods.GetWindowDpiAwarenessContext(Handles.Host));
             using var memory = new RemoteListViewBuffer(Handles.ProcessId, _logger);
@@ -369,21 +372,30 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
             var coordinates = new DesktopCoordinates(new(origin.X, origin.Y), new(viewOrigin.X, viewOrigin.Y));
             var spacing = (long)SendMessage(Handles.IconList, 0x1033, 0, 0);
             var stepX = (int)(spacing & 0xFFFF); var stepY = (int)((spacing >> 16) & 0xFFFF);
-            var icons = new List<DesktopIcon>(count);
+            var dpiAtStart = NativeMethods.GetDpiForWindow(Handles.IconList);
+            var cached = scope is null ? null : _completeSnapshot;
+            if (scope is not null && (cached is null || shellCount != count || count != cached.Icons.Count ||
+                dpiAtStart != _completeDpi || stepX != cached.Metrics.StepX || stepY != cached.Metrics.StepY))
+                return new(true, false, [], IconGridMetrics.Default, "Explorer inventory or grid changed before animation.");
+            var readCount = scope?.Count ?? count;
+            var icons = new List<DesktopIcon>(readCount);
             var newPidls = new Dictionary<string, nint>(FenceIconLayout.IdentityComparer);
             var failed = 0;
             string? firstFailure = null;
             double itemWidth = 1, itemHeight = 1, offsetX = 0, offsetY = 0;
             try
             {
-                for (var index = 0; index < count; index++)
+                for (var i = 0; i < readCount; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    var index = scope is null ? i : scope[i].Index;
                     nint pidl = 0;
                     try
                     {
                         Marshal.ThrowExceptionForHR(_shell.View.Item(index, out pidl));
                         var identity = ShellFolderView.Name(pidl, 0x80028000); // SIGDN_DESKTOPABSOLUTEPARSING
+                        if (scope is not null && !FenceIconLayout.IdentityComparer.Equals(identity, scope[i].StableId))
+                            throw new InvalidOperationException("Explorer index changed before animation.");
                         var shellName = ShellFolderView.Name(pidl, 0);
                         if (SendMessage(Handles.IconList, 0x1010, index, memory.Address(0)) == 0) throw new InvalidOperationException("LVM_GETITEMPOSITION failed.");
                         var point = memory.Read<NativeMethods.Point>(0);
@@ -418,7 +430,8 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
                 var finalOrigin = new NativeMethods.Point();
                 var finalOriginRead = NativeMethods.ClientToScreen(Handles.IconList, ref finalOrigin);
                 var finalViewOrigin = SendMessage(Handles.IconList, 0x1029, 0, memory.Address(0)) != 0 ? memory.Read<NativeMethods.Point>(0) : new();
-                if (shellCount != count || finalShellCount != count || finalCount != count ||
+                var finalDpi = NativeMethods.GetDpiForWindow(Handles.IconList);
+                if (shellCount != count || finalShellCount != count || finalCount != count || finalDpi != dpiAtStart ||
                     !finalOriginRead || finalOrigin.X != origin.X || finalOrigin.Y != origin.Y ||
                     finalViewOrigin.X != viewOrigin.X || finalViewOrigin.Y != viewOrigin.Y)
                 { failed++; firstFailure ??= "Explorer membership or coordinate origin changed during enumeration."; }
@@ -426,30 +439,38 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
                 if (failed == 0)
                 {
                     _coordinates = coordinates;
-                    foreach (var old in _pidls.Values) Marshal.FreeCoTaskMem(old);
-                    _pidls.Clear();
-                    foreach (var pair in newPidls) _pidls.Add(pair.Key, pair.Value);
+                    if (scope is null)
+                    {
+                        foreach (var old in _pidls.Values) Marshal.FreeCoTaskMem(old);
+                        _pidls.Clear();
+                    }
+                    foreach (var pair in newPidls)
+                    {
+                        if (_pidls.TryGetValue(pair.Key, out var replaced)) Marshal.FreeCoTaskMem(replaced);
+                        _pidls[pair.Key] = pair.Value;
+                    }
                     newPidls.Clear();
                 }
                 var autoArrange = _shell.View.GetAutoArrange();
                 Marshal.ThrowExceptionForHR(autoArrange);
                 var canPosition = autoArrange == 1; // S_FALSE: auto-arrange is off.
                 var error = !canPosition ? Texts.T("Отключите «Упорядочить значки автоматически» на рабочем столе для группировки иконок.") :
-                    failed > 0 ? Texts.F("Не удалось прочитать {0} из {1} иконок: {2}", failed, count, firstFailure) : null;
-                var snapshot = new DesktopIconSnapshot(true, canPosition, icons, new IconGridMetrics(stepX, stepY, itemWidth, itemHeight, offsetX, offsetY).Validated(), error,
+                    failed > 0 ? Texts.F("Не удалось прочитать {0} из {1} иконок: {2}", failed, readCount, firstFailure) : null;
+                var snapshot = new DesktopIconSnapshot(true, canPosition, icons, cached?.Metrics ?? new IconGridMetrics(stepX, stepY, itemWidth, itemHeight, offsetX, offsetY).Validated(), error,
                     _restoreGrid ? Texts.T("Сетка Explorer временно отключена; восстановится при закрытии приложения.") : null);
-                if (error is null) { _completeSnapshot = snapshot; _completeDpi = NativeMethods.GetDpiForWindow(Handles.IconList); }
+                if (error is null && scope is null) { _completeSnapshot = snapshot; _completeDpi = finalDpi; }
                 return snapshot;
             }
             finally { foreach (var pidl in newPidls.Values) Marshal.FreeCoTaskMem(pidl); }
         }
-        public void ReconcileDrop(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout, CancellationToken cancellationToken)
+        public void ReconcileDrop(Func<DesktopIconSnapshot, IReadOnlyList<DesktopIconTarget>> layout, CancellationToken cancellationToken,
+            IReadOnlySet<string>? positionScope)
         {
             RequireCompletedGesture();
             // Enumerate and compute the full proposal before freezing. Most drop-out
             // operations only change assignment and already have final Explorer
             // positions. They must not toggle redraw at all.
-            var snapshot = ReadDropPositions(cancellationToken);
+            var snapshot = ReadDropPositions(cancellationToken, positionScope);
             if (!snapshot.Connected || !snapshot.CanPosition || snapshot.Error is not null)
                 throw new InvalidOperationException("Explorer drop snapshot is unavailable.");
             var targets = layout(snapshot);
@@ -459,7 +480,7 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
             // Position prepares PIDLs/grid before the short false -> bulk -> true lease.
             Position(targets, cancellationToken, deferRedraw: true);
         }
-        private DesktopIconSnapshot ReadDropPositions(CancellationToken cancellationToken)
+        private DesktopIconSnapshot ReadDropPositions(CancellationToken cancellationToken, IReadOnlySet<string>? positionScope)
         {
             _trace?.Mark("Drop.positions.begin");
             try
@@ -485,11 +506,12 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
                 var spacing = (long)SendMessage(Handles.IconList, 0x1033, 0, 0);
                 if (!SameInventory() || (spacing & 0xFFFF) != cached.Metrics.StepX || ((spacing >> 16) & 0xFFFF) != cached.Metrics.StepY)
                     return Read(cancellationToken);
-                var icons = new DesktopIcon[cached.Icons.Count];
+                var candidates = positionScope is null ? cached.Icons : cached.Icons.Where(icon => positionScope.Contains(icon.StableId)).ToArray();
+                var icons = new DesktopIcon[candidates.Count];
                 for (var i = 0; i < icons.Length; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var old = cached.Icons[i];
+                    var old = candidates[i];
                     Marshal.ThrowExceptionForHR(_shell.View.GetItemPosition(IdentityPidl(old.StableId), out var point));
                     var screen = coordinates.ToScreen(new(point.X, point.Y));
                     icons[i] = old with { ViewPosition = new(point.X, point.Y), Position = screen,
@@ -500,7 +522,7 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
                 var arrange = _shell.View.GetAutoArrange(); Marshal.ThrowExceptionForHR(arrange);
                 if (arrange != 1) return Read(cancellationToken);
                 _coordinates = coordinates;
-                _trace?.Mark("Drop.positions.cached", icons.Length);
+                _trace?.Mark(positionScope is null ? "Drop.positions.cached" : "Drop.positions.scopedParking", icons.Length);
                 return cached with { Icons = icons };
             }
             catch (OperationCanceledException) { throw; }
@@ -580,17 +602,34 @@ public sealed partial class DesktopIconService : IDesktopIconService, IDesktopSe
                 // (about twice as fast as per-item DELETE+CREATE pairs for a group).
                 foreach (var folder in items.Select(i => Path.GetDirectoryName(i.Id)).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase))
                     NotifyItem(0x1000, folder);
-                var started = System.Diagnostics.Stopwatch.GetTimestamp();
-                DesktopIconSnapshot? snapshot = null;
-                while (System.Diagnostics.Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(4)) // a busy Explorer may need several seconds for a large group
+                var expected = items.Select(i => i.Id).ToHashSet(FenceIconLayout.IdentityComparer);
+                var present = new HashSet<string>(FenceIconLayout.IdentityComparer);
+                var started = Stopwatch.GetTimestamp();
+                var lastRead = started;
+                int? lastCount = null;
+                var reads = 0;
+                while (Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(4))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var read = Read(cancellationToken);
-                    snapshot = read;
-                    if (read.Error is null && items.All(i => read.Icons.Any(icon => FenceIconLayout.IdentityComparer.Equals(icon.StableId, i.Id)))) break;
+                    var count = (int)SendMessage(Handles.IconList, 0x1004, 0, 0); // LVM_GETITEMCOUNT
+                    // Re-scan when icons are added. A periodic read covers same-count replacements and unstable snapshots.
+                    if (count != lastCount || Stopwatch.GetElapsedTime(lastRead) >= TimeSpan.FromMilliseconds(100))
+                    {
+                        lastCount = count;
+                        lastRead = Stopwatch.GetTimestamp();
+                        var read = Read(cancellationToken);
+                        reads++;
+                        present.Clear();
+                        if (read.Error is null)
+                        {
+                            foreach (var icon in read.Icons)
+                                if (expected.Contains(icon.StableId)) present.Add(icon.StableId);
+                            if (present.Count == expected.Count) break;
+                        }
+                    }
                     Thread.Sleep(5);
                 }
-                var present = snapshot?.Icons.Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer) ?? [];
+                _trace?.Mark("Reveal.inventoryReads", reads);
                 _trace?.Mark("Reveal.present", present.Count);
                 var targets = items.Where(i => i.Position is not null && present.Contains(i.Id))
                     .Select(i => new DesktopIconTarget(i.Id, i.Position!.Value)).ToArray();

@@ -20,7 +20,7 @@ public sealed partial class DesktopIconCoordinator : IDisposable
     private readonly IconLayoutTransaction _transaction;
     private readonly Win32DesktopHost _host;
     private readonly ILogger<DesktopIconCoordinator> _logger;
-    private readonly DispatcherTimer _timer, _releaseTimer, _followUp, _approachExpiry, _quietReturn;
+    private readonly DispatcherTimer _timer, _releaseTimer, _followUp;
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Func<IReadOnlyList<Fence>, bool> _commit;
@@ -35,7 +35,8 @@ public sealed partial class DesktopIconCoordinator : IDisposable
     private readonly HashSet<string> _removed = new(FenceIconLayout.IdentityComparer);
     private IReadOnlyList<DesktopArea> _monitors = [];
     private MoveBatch? _pending;
-    private bool _reading, _moving, _initialized, _disposed, _applyingDrop, _positioningAvailable, _requested, _scheduled, _recoveryLoaded;
+    private bool _reading, _moving, _initialized, _disposed, _applyingDrop, _positioningAvailable, _requested, _recoveryLoaded;
+    private DispatcherOperation? _scheduled;
     private long _revision;
     private readonly ExplorerGesture _explorerGesture = new();
     private Task? _selectionRead;
@@ -46,19 +47,25 @@ public sealed partial class DesktopIconCoordinator : IDisposable
     private TaskCompletionSource? _idle;
     public event Action<long, double>? FramePresented;
     public long LastPresentationAt { get; private set; }
-    public bool InteractionActive { get; set; }
+    private bool _interactionActive;
+    public bool InteractionActive
+    {
+        get => _interactionActive;
+        set
+        {
+            if (_interactionActive == value) return;
+            _interactionActive = value;
+            if (!value && _timer.IsEnabled) RequestObservation(DispatcherPriority.Input);
+        }
+    }
     private string? _lastMoveError;
     public bool Enabled { get; set; } = true;
     private bool _concealWhenIdle;
-    private long _lastGestureEnd;
-    /// <summary>
-    /// True: collapsed-group items stay hidden while idle (no drop flash, expand waits ~0.6 s for Explorer).
-    /// False (default): items are hidden only during desktop drags, so expands start instantly. See <see cref="ConcealmentPolicy"/>.
-    /// </summary>
+    /// <summary>True also hides the just-collapsed group while the pointer is still over its header.</summary>
     public bool ConcealWhenIdle
     {
         get => _concealWhenIdle;
-        set { if (_concealWhenIdle == value) return; _concealWhenIdle = value; _approachedAt.Clear(); if (_timer.IsEnabled) RequestObservation(); }
+        set { if (_concealWhenIdle == value) return; _concealWhenIdle = value; if (value) UpdateConcealmentHeader(null); }
     }
     public IconGridMetrics Metrics { get; private set; } = IconGridMetrics.Default;
     public string Status { get; private set; } = "Desktop icons: discovery pending";
@@ -74,11 +81,6 @@ public sealed partial class DesktopIconCoordinator : IDisposable
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
         _followUp = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
         _followUp.Tick += (_, _) => { _followUp.Stop(); RequestObservation(); };
-        _approachExpiry = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(500) };
-        _approachExpiry.Tick += OnApproachExpiry;
-        // One check after the desktop has been quiet: hidden items return to parking for an instant expand.
-        _quietReturn = new DispatcherTimer(DispatcherPriority.Background) { Interval = ConcealmentPolicy.QuietBeforeReturn + TimeSpan.FromMilliseconds(100) };
-        _quietReturn.Tick += (_, _) => { _quietReturn.Stop(); RequestObservation(); };
         _releaseTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(16) };
         _timer.Tick += OnTick; _releaseTimer.Tick += OnReleaseTick;
         _host.IconPositionsChanged += OnExplorerChanged;
@@ -117,17 +119,13 @@ public sealed partial class DesktopIconCoordinator : IDisposable
                 _selectionRead = CaptureSelectionAsync(input.SelectionSnapshot, _explorerGesture.Sequence);
             else if (!input.Background && _icons is IDesktopSelectionReader reader)
                 _selectionRead = CaptureSelectionAsync(reader.ReadSelectionAsync(input.Point, _shutdown.Token), _explorerGesture.Sequence);
-            // A press may start a drag: groups prepared for a hover leave Explorer now, while the drag
-            // is still in progress, instead of waiting for the pointer to leave the Fence row.
-            _approachedAt.Clear();
-            _quietReturn.Stop();
-            if (ConcealmentPolicy.HideOnPress(_concealWhenIdle)) _ = ConcealParkedNowAsync();
+            UpdateConcealmentHeader(null);
         }
         else if (input.Phase == ExplorerPointerPhase.DragStarted && _explorerGesture.StartDrag())
         {
             _host.Trace.Mark("DragStarted");
-            // Instant-expand mode: parked items leave Explorer for the drop only (a click never gets here).
-            if (ConcealmentPolicy.HideOnDragStart(_concealWhenIdle)) _ = ConcealParkedNowAsync();
+            if (_explorerGesture.Phase is ExplorerGesturePhase.SingleDrag or ExplorerGesturePhase.MultiDrag)
+                _ = ConcealParkedNowAsync();
             if (_selectionRead is null && _icons is IDesktopSelectionReader reader)
                 _selectionRead = CaptureSelectionAsync(reader.ReadSelectionAsync(_explorerGesture.PressPoint, _shutdown.Token), _explorerGesture.Sequence);
         }
@@ -135,22 +133,20 @@ public sealed partial class DesktopIconCoordinator : IDisposable
         {
             _host.Trace.Mark("Gesture.release");
             _explorerGesture.Release(input.Point, input.DesktopTarget); _releaseTimer.Start(); RequestObservation(DispatcherPriority.Input);
-            MarkGestureEnd();
         }
         else if (input.Phase == ExplorerPointerPhase.Cancelled)
         {
             _explorerGesture.Cancel(); _selectionRead = null; _releaseTimer.Start();
-            MarkGestureEnd();
         }
-    }
-    private void MarkGestureEnd()
-    {
-        _lastGestureEnd = Stopwatch.GetTimestamp();
-        if (!_concealWhenIdle) { _quietReturn.Stop(); _quietReturn.Start(); }
     }
     private async Task CaptureSelectionAsync(Task<DesktopSelection> snapshot, long sequence)
     {
-        try { _explorerGesture.Capture(sequence, await snapshot); }
+        try
+        {
+            if (_explorerGesture.Capture(sequence, await snapshot) &&
+                _explorerGesture.Phase is ExplorerGesturePhase.SingleDrag or ExplorerGesturePhase.MultiDrag)
+                _ = ConcealParkedNowAsync();
+        }
         catch (OperationCanceledException) { }
         catch (Exception error) { _logger.LogWarning(error, "Could not capture Explorer selection; this gesture will not reassign partial groups"); }
     }
@@ -187,9 +183,13 @@ public sealed partial class DesktopIconCoordinator : IDisposable
     {
         if (_disposed || _stopping) return;
         _requested = true;
-        if (_reading || _moving || _scheduled) return;
-        _scheduled = true;
-        _dispatcher.BeginInvoke(priority, new Action(() => { _scheduled = false; OnTick(this, EventArgs.Empty); }));
+        if (_reading || _moving) return;
+        if (_scheduled is { } pending)
+        {
+            if (pending.Priority < priority) pending.Priority = priority;
+            return;
+        }
+        _scheduled = _dispatcher.BeginInvoke(priority, new Action(() => { _scheduled = null; OnTick(this, EventArgs.Empty); }));
     }
     private async void OnTick(object? sender, EventArgs args)
     {
@@ -228,7 +228,7 @@ public sealed partial class DesktopIconCoordinator : IDisposable
             _host.ReconcileExplorerPresentation();
             Metrics = snapshot.Metrics; _host.IconMetrics = Metrics;
             _matched = FenceIconLayout.Match(snapshot.Icons);
-            _host.SetIcons(snapshot.Icons);
+            _host.SetIcons(_matched);
             var available = Enabled && _host.PresentationConnected && snapshot.CanPosition && snapshot.Error is null;
             if (!_initialized || available && !_positioningAvailable)
             {
@@ -332,7 +332,7 @@ public sealed partial class DesktopIconCoordinator : IDisposable
     private void ApplySnapshot(DesktopIconSnapshot snapshot)
     {
         _matched = FenceIconLayout.Match(snapshot.Icons);
-        _host.SetIcons(snapshot.Icons); _host.EnsureStacking();
+        _host.SetIcons(_matched); _host.EnsureStacking();
     }
     public void Preview(Fence fence, bool resize, double scale, Action? present = null)
     {
@@ -366,7 +366,7 @@ public sealed partial class DesktopIconCoordinator : IDisposable
         if (fence.IsCollapsed && fence.Icons.Any(i => !_recovery.Any(r => FenceIconLayout.IdentityComparer.Equals(r.StableId, i.StableId))))
             throw new InvalidOperationException("Icon recovery must be armed before collapse.");
         var proposed = _fences.Select(f => f.Id == fence.Id ? fence : f).ToArray();
-        var targets = IconPlacement.Targets(proposed, _monitors, Metrics).Where(t => _matched.ContainsKey(t.StableId)).ToArray();
+        var targets = IconPlacement.Targets(proposed, _monitors, Metrics, fence.Id).Where(t => _matched.ContainsKey(t.StableId)).ToArray();
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var batch = new MoveBatch(Math.Max(1, targets.Length)) { Present = present, Completion = completion };
         foreach (var target in targets) batch.Add(target);
@@ -375,13 +375,16 @@ public sealed partial class DesktopIconCoordinator : IDisposable
     }
     public async Task VerifyTransitionAsync(Fence fence)
     {
+        if (fence.Icons.IsEmpty) return;
         var proposed = _fences.Select(f => f.Id == fence.Id ? fence : f).ToArray();
-        var snapshot = await _icons.ReadAsync(_shutdown.Token);
+        var snapshot = _icons is IDesktopIconAnimationPositioner positioner
+            ? await positioner.ReadAnimationItemsAsync(fence.Icons.Select(i => i.StableId)
+                .ToHashSet(FenceIconLayout.IdentityComparer), _shutdown.Token)
+            : await _icons.ReadAsync(_shutdown.Token);
         var present = FenceIconLayout.Match(snapshot.Icons);
         // Only this group's items that Explorer currently shows: items of other groups (or this one) may be
         // hidden by the attribute layer meanwhile, which is not a failed transition.
-        var own = fence.Icons.Select(i => i.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
-        var targets = IconPlacement.Targets(proposed, _monitors, Metrics).Where(t => own.Contains(t.StableId) && present.ContainsKey(t.StableId)).ToArray();
+        var targets = IconPlacement.Targets(proposed, _monitors, Metrics, fence.Id).Where(t => present.ContainsKey(t.StableId)).ToArray();
         if (IconPlacement.AtTargets(snapshot, targets)) return;
         // Items that Explorer re-added late (after a reveal) are placed once; only a second miss rolls the
         // transition back. Rolling back for a lagging item looked like "opens and closes again" on hover.
@@ -463,7 +466,7 @@ public sealed partial class DesktopIconCoordinator : IDisposable
                             var updated = old with { Position = target.Position, Bounds = old.Bounds with { X = old.Bounds.X + deltaX, Y = old.Bounds.Y + deltaY } };
                             _matched[target.StableId] = updated;
                         }
-                        _host.SetIcons(_matched.Values.ToArray()); _host.EnsureStacking();
+                        _host.EnsureStacking();
                     }
                     _host.ReconcileExplorerPresentation();
                     var iconTime = Stopwatch.GetElapsedTime(positionStart).TotalMilliseconds;
@@ -502,7 +505,7 @@ public sealed partial class DesktopIconCoordinator : IDisposable
     public async Task PrepareExitAsync()
     {
         var started = Stopwatch.GetTimestamp();
-        while (_reading || _moving || _pending is not null || _scheduled || ExplorerBusy())
+        while (_reading || _moving || _pending is not null || _scheduled is not null || ExplorerBusy())
         {
             if (Stopwatch.GetElapsedTime(started) > TimeSpan.FromSeconds(10))
                 throw new InvalidOperationException(Texts.T("Дождитесь завершения перемещения значков и повторите выход."));
@@ -551,7 +554,7 @@ public sealed partial class DesktopIconCoordinator : IDisposable
         _host.IconRemoved -= OnIconRemoved;
         _host.ExplorerPointer -= OnExplorerPointer;
         _timer.Stop(); _timer.Tick -= OnTick; _releaseTimer.Stop(); _releaseTimer.Tick -= OnReleaseTick;
-        _followUp.Stop(); _approachExpiry.Stop(); _approachExpiry.Tick -= OnApproachExpiry; _quietReturn.Stop();
+        _followUp.Stop();
         _shutdown.Cancel(); _pending?.Completion?.TrySetCanceled(); _pending?.Dispose(); _pending = null;
         _shutdown.Dispose();
         _idle?.TrySetCanceled();

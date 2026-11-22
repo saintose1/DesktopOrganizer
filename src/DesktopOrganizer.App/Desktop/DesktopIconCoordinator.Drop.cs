@@ -56,7 +56,11 @@ public sealed partial class DesktopIconCoordinator
         var revision = _revision; var sequence = _explorerGesture.Sequence;
         var source = _fences.ToArray(); var monitors = _monitors.ToArray();
         var before = _beforeExplorerDrag;
-        var scales = source.ToDictionary(f => f.Id, _host.GetScale);
+        var assignmentDrop = DropAffectsFence(drop);
+        var scales = assignmentDrop ? source.ToDictionary(f => f.Id, _host.GetScale) : null;
+        // For ordinary desktop moves, only collapsed-group items can require positioning.
+        var positionScope = assignmentDrop ? null : source.Where(f => f.IsCollapsed).SelectMany(f => f.Icons)
+            .Select(icon => icon.StableId).ToHashSet(FenceIconLayout.IdentityComparer);
         IReadOnlyList<Fence> changed = source;
         IReadOnlyList<DesktopIconTarget> targets = [], recovery = [];
         var restoredParking = 0;
@@ -72,8 +76,12 @@ public sealed partial class DesktopIconCoordinator
                 {
                     // Runs on the Shell worker before the redraw lease. Immutable inputs and pure
                     // Core geometry only; no UI, host calls, recovery files or persistence here.
-                    changed = FenceIconLayout.ApplyGroupDrop(source, drop, snapshot.Icons, snapshot.Metrics, f => scales[f.Id]);
-                    var layout = IconPlacement.ChangedFenceTargets(source, changed, monitors, snapshot.Metrics);
+                    IReadOnlyList<DesktopIconTarget> layout = [];
+                    if (scales is not null)
+                    {
+                        changed = FenceIconLayout.ApplyGroupDrop(source, drop, snapshot.Icons, snapshot.Metrics, f => scales[f.Id]);
+                        layout = IconPlacement.ChangedFenceTargets(source, changed, monitors, snapshot.Metrics);
+                    }
                     var parking = IconPlacement.DisplacedParking(changed, before, snapshot, drop.DraggedIds, monitors);
                     restoredParking = parking.Count;
                     foreach (var item in parking) parked.Add(item.StableId);
@@ -100,10 +108,10 @@ public sealed partial class DesktopIconCoordinator
                     _host.Trace.Mark("Persistence.begin");
                     var accepted = SameState(_fences, changed) || _commit(changed);
                     _host.Trace.Mark("Persistence.end"); return accepted;
-                }, _shutdown.Token, parked.Contains);
+                }, _shutdown.Token, parked.Contains, positionScope);
             ApplySnapshot(positioned); CompleteRecovery(recovery);
             var counters = (_icons as IDesktopPositionDiagnostics)?.PositionCounters ?? default;
-            var target = FenceIconLayout.DropTarget(changed, drop.Point, f => scales[f.Id]);
+            var target = scales is null ? null : FenceIconLayout.DropTarget(changed, drop.Point, f => scales[f.Id]);
             _logger.LogInformation("Desktop drop reconciled: SelectedCount={Selected}; DraggedItemIdHash={Item}; TargetFence={Fence}; AssignedAfterDrop={Assigned}; MovedTargets={Targets}; RestoredParking={Parked}; BulkCalls={Batches}; ShellRedrawCompletions={Redraw}; ExtraRepaints={Paints}",
                 drop.DraggedIds.Count, IdentityHash(drop.DraggedItemId), target?.Id,
                 changed.SelectMany(f => f.Icons).Count(i => drop.DraggedIds.Contains(i.StableId, FenceIconLayout.IdentityComparer)),

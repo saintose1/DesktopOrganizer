@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DesktopOrganizer — набросок «Лесной»</title>
+<style>
+  :root {
+    --bg: #0e1812;
+    --side: #0a110d;
+    --card: #14221a;
+    --card-hi: #182a20;
+    --line: #243a2d;
+    --line-soft: #1b2d22;
+    --text: #e4e6d3;
+    --muted: #8da193;
+    --moss: #86a35f;
+    --moss-deep: #4f7340;
+    --stone: #cfcdb2;
+    --amber: #d9a95b;
+    --ifill: #2a3d31; --b0:#1b2f22; --b1:#223a2a; --b2:#162a1d; --b3:#10200f; --b4:#4f7340; --ray:#d8e2a8; --rayo:.10; --page:#070c09; --cap:#dfe8c8; --capb:#fff; --capsh:0 1px 2px rgba(0,0,0,.45); --hover:#1d3226; --btxt:#f1f3e4;
+    --serif: "Georgia", "Cambria", serif;
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  }
+  :root[data-theme="light"] {
+    --bg:#eef0e2; --side:#e3e8d3; --card:#f8f9ef; --card-hi:#ffffff; --line:#c6cfae; --line-soft:#d3dabf;
+    --text:#1e2a20; --muted:#5b6c5d; --moss:#4d7a3a; --moss-deep:#4d7a3a; --stone:#3f5340;
+    --ifill:#dde5c8; --b0:#d3dfb8; --b1:#b3c997; --b2:#86a672; --b3:#60854c; --b4:#4d7a3a; --ray:#fffbe3; --rayo:.55;
+    --page:#dfe3cf; --cap:#2c3d2c; --capb:#14210f; --capsh:none; --hover:#e8edd6; --btxt:#f6f8ea;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--page); font-family: var(--sans); color: var(--text); padding: 24px; }
+  .window { max-width: 1120px; margin: 0 auto; height: 700px; background: var(--bg); border: 1px solid var(--line); display: grid; grid-template-rows: 40px 1fr; overflow: hidden; }
+  .titlebar { display: flex; align-items: center; justify-content: space-between; padding: 0 0 0 14px; background: var(--side); border-bottom: 1px solid var(--line-soft); font-size: 13px; color: var(--muted); }
+  .titlebar b { color: var(--text); font-weight: 500; margin-left: 8px; }
+  .wc { display: flex; }
+  .wc span { width: 46px; height: 40px; display: grid; place-items: center; font-size: 12px; }
+  .wc span:last-child:hover { background: #8a3b36; color: #fff; }
+  .body { display: grid; grid-template-columns: 208px 1fr; min-height: 0; }
+
+  .side { background: var(--side); border-right: 1px solid var(--line-soft); padding: 16px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .nav { display: flex; align-items: center; gap: 12px; padding: 9px 12px; font-size: 14px; color: var(--muted); border-left: 2px solid transparent; cursor: default; }
+  .nav:hover { color: var(--text); }
+  .nav.on { color: var(--text); border-left-color: var(--moss); background: var(--card); }
+  .nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .nav small { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .grow { flex: 1; }
+  .sep { height: 1px; background: var(--line-soft); margin: 8px 12px; }
+  .status { padding: 10px 12px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--moss); }
+
+  .main { overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+  .head { display: flex; align-items: flex-end; gap: 12px; padding: 22px 28px 14px; }
+  .head h1 { font-family: var(--serif); font-weight: 400; font-size: 34px; letter-spacing: -0.01em; line-height: 1; }
+  .head p { font-size: 13px; color: var(--muted); margin-top: 8px; }
+  .head .sp { flex: 1; }
+  .search { display: flex; align-items: center; gap: 8px; width: 230px; padding: 8px 12px; border: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+  .search svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+  .btn { padding: 9px 16px; background: var(--moss-deep); color: var(--btxt); font-size: 13px; font-weight: 500; border: 0; font-family: inherit; }
+  .btn:hover { filter: brightness(1.12); }
+  .theme { margin-right: 10px; padding: 3px 10px; border: 1px solid var(--line); background: none; color: var(--muted); font: inherit; font-size: 12px; }
+  .theme:hover { color: var(--text); }
+
+  .banner { margin: 0 28px; height: 116px; position: relative; overflow: hidden; border: 1px solid var(--line); background: var(--b0); }
+  .banner svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .banner .cap { position: absolute; left: 14px; bottom: 16px; font-size: 12px; color: var(--cap); text-shadow: var(--capsh); display: flex; gap: 18px; }
+  .banner .cap b { font-weight: 500; color: var(--capb); font-variant-numeric: tabular-nums; }
+
+  .groups { padding: 18px 28px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; overflow: hidden; }
+  .g { background: var(--card); border: 1px solid var(--line); padding: 14px 16px 12px; position: relative; }
+  .g:hover { background: var(--card-hi); border-color: var(--moss-deep); }
+  .g header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+  .g h2 { font-family: var(--serif); font-weight: 400; font-size: 18px; }
+  .g .n { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .g .more { margin-left: auto; color: var(--muted); letter-spacing: 2px; font-size: 15px; line-height: 1; }
+  .tag { font-size: 11px; padding: 2px 7px; border: 1px solid var(--line); color: var(--muted); }
+  .tag.auto { color: var(--moss); border-color: var(--moss-deep); }
+  .items { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .it { text-align: center; padding: 8px 4px 6px; font-size: 13px; color: var(--text); }
+  .it:hover { background: var(--hover); }
+  .it svg { width: 52px; height: 52px; display: block; margin: 0 auto 6px; fill: none; stroke: var(--stone); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .it svg .m { fill: var(--moss); stroke: none; }
+  .it svg .m2 { fill: var(--moss-deep); stroke: none; }
+  .it svg .fill { fill: var(--ifill); }
+  .note { max-width: 1120px; margin: 14px auto 0; font-size: 13px; color: #7f9186; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="moss" viewBox="0 0 52 52">
+      <path class="m" d="M30 47c1-6 4-9 9-10-1 5-4 8-9 10z"/>
+      <path class="m2" d="M36 48c0-5 3-8 8-9 0 4-3 7-8 9z"/>
+      <path class="m" d="M24 48c-3-4-6-5-10-5 2 4 6 6 10 5z"/>
+    </symbol>
+    <symbol id="i-globe" viewBox="0 0 52 52"><circle cx="26" cy="25" r="17"/><ellipse cx="26" cy="25" rx="7" ry="17"/><path d="M9 25h34M12 16h28M12 34h28"/><use href="#moss"/></symbol>
+    <symbol id="i-code" viewBox="0 0 52 52"><rect class="fill" x="7" y="9" width="38" height="30" rx="3"/><path d="M7 16h38"/><path d="M21 24l-5 5 5 5M31 24l5 5-5 5"/><use href="#moss"/></symbol>
+    <symbol id="i-term" viewBox="0 0 52 52"><rect class="fill" x="7" y="9" width="38" height="30" rx="3"/><path d="M15 20l6 5-6 5M25 32h9"/><use href="#moss"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 52 52"><path class="fill" d="M7 15a3 3 0 0 1 3-3h10l4 5h18a3 3 0 0 1 3 3v17a3 3 0 0 1-3 3H10a3 3 0 0 1-3-3z"/><use href="#moss"/></symbol>
+    <symbol id="i-note" viewBox="0 0 52 52"><path class="fill" d="M13 8h26a2 2 0 0 1 2 2v30a2 2 0 0 1-2 2H13a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z"/><path d="M18 17h16M18 24h16M18 31h10"/><use href="#moss"/></symbol>
+    <symbol id="i-down" viewBox="0 0 52 52"><path class="fill" d="M8 30l6-14h24l6 14v9a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z"/><path d="M26 12v14m-6-5l6 6 6-6"/><use href="#moss"/></symbol>
+    <symbol id="i-steam" viewBox="0 0 52 52"><circle class="fill" cx="26" cy="25" r="17"/><circle cx="31" cy="20" r="4.5"/><path d="M10 29l11 4M18 36a4 4 0 1 0 3-7"/><use href="#moss"/></symbol>
+    <symbol id="i-jet" viewBox="0 0 52 52"><path class="fill" d="M26 6l3 14 17 10v4l-17-4-1 9 5 3v3l-7-2-7 2v-3l5-3-1-9-17 4v-4l17-10z"/><use href="#moss"/></symbol>
+    <symbol id="i-books" viewBox="0 0 52 52"><rect class="fill" x="9" y="12" width="9" height="28" rx="1"/><rect class="fill" x="20" y="9" width="9" height="31" rx="1"/><path d="M33 16l8 2-6 22-8-2z" class="fill"/><use href="#moss"/></symbol>
+    <symbol id="i-mon" viewBox="0 0 52 52"><rect class="fill" x="7" y="9" width="38" height="25" rx="2"/><path d="M20 42h12M26 34v8"/><path d="M12 29l9-9 6 6 5-5 6 6"/><use href="#moss"/></symbol>
+    <symbol id="i-drive" viewBox="0 0 52 52"><rect class="fill" x="7" y="20" width="38" height="16" rx="3"/><circle cx="38" cy="28" r="1.8"/><path d="M13 28h12"/><use href="#moss"/></symbol>
+    <symbol id="i-bin" viewBox="0 0 52 52"><path class="fill" d="M14 15h24l-2 25a2 2 0 0 1-2 2H18a2 2 0 0 1-2-2z"/><path d="M11 15h30M21 15v-4h10v4"/><path d="M21 23v13M31 23v13"/><use href="#moss"/></symbol>
+  </defs>
+</svg>
+
+<div class="window">
+  <div class="titlebar">
+    <div><span style="color:var(--moss)">&#10086;</span><b>Desktop Organizer</b></div>
+    <div class="wc" style="align-items:center"><button class="theme" id="tg" type="button">Светлая</button><span>&#8212;</span><span>&#9633;</span><span>&#10005;</span></div>
+  </div>
+  <div class="body">
+
+    <nav class="side">
+      <div class="nav on"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9H4z"/></svg>Обзор</div>
+      <div class="nav"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/></svg>Группы<small>4</small></div>
+      <div class="nav"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h10M5 17h6"/></svg>Правила</div>
+      <div class="nav"><svg viewBox="0 0 24 24"><path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM4 10h16"/></svg>Профили</div>
+      <div class="grow"></div>
+      <div class="sep"></div>
+      <div class="nav"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>Настройки</div>
+      <div class="status"><span class="dot"></span>Работает в трее</div>
+    </nav>
+
+    <main class="main">
+      <div class="head">
+        <div>
+          <h1>Обзор</h1>
+          <p>65 значков на столе, 4 группы</p>
+        </div>
+        <div class="sp"></div>
+        <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>Найти значок</div>
+        <button class="btn">+ Новая группа</button>
+      </div>
+
+      <div class="banner" role="img" aria-label="Силуэты елей в лесу и пятно света">
+        <svg viewBox="0 0 1000 116" preserveAspectRatio="xMidYMid slice">
+          <rect width="1000" height="116" style="fill:var(--b0)"/>
+          <polygon points="560,0 640,0 520,116 380,116" style="fill:var(--ray);opacity:var(--rayo)"/>
+          <polygon points="650,0 700,0 640,116 560,116" style="fill:var(--ray);opacity:calc(var(--rayo) * .7)"/>
+          <g style="fill:var(--b1)">
+            <path d="M40 116V70l-14 0 20-34-12 0 22-34 22 34-12 0 20 34-14 0v46z"/>
+            <path d="M150 116V78l-12 0 16-28-10 0 18-28 18 28-10 0 16 28-12 0v38z"/>
+            <path d="M300 116V74l-13 0 18-31-11 0 20-32 20 32-11 0 18 31-13 0v42z"/>
+            <path d="M470 116V80l-11 0 15-26-9 0 16-26 16 26-9 0 15 26-11 0v36z"/>
+            <path d="M720 116V72l-13 0 18-31-11 0 20-32 20 32-11 0 18 31-13 0v44z"/>
+            <path d="M880 116V78l-12 0 16-28-10 0 18-28 18 28-10 0 16 28-12 0v38z"/>
+          </g>
+          <g style="fill:var(--b2)">
+            <path d="M-10 116V58l-20 0 28-48-16 0 30-48 30 48-16 0 28 48-20 0v58z"/>
+            <path d="M92 116V84l-12 0 16-26-10 0 18-30 18 30-10 0 16 26-12 0v32z"/>
+            <path d="M230 116V62l-18 0 24-40-14 0 26-42 26 42-14 0 24 40-18 0v54z"/>
+            <path d="M390 116V86l-11 0 14-22-9 0 15-24 15 24-9 0 14 22-11 0v30z"/>
+            <path d="M600 116V66l-17 0 23-38-13 0 25-40 25 40-13 0 23 38-17 0v50z"/>
+            <path d="M800 116V84l-11 0 15-24-9 0 16-26 16 26-9 0 15 24-11 0v32z"/>
+            <path d="M950 116V60l-19 0 26-44-15 0 28-46 28 46-15 0 26 44-19 0v56z"/>
+          </g>
+          <rect y="104" width="1000" height="12" style="fill:var(--b3)"/>
+          <g style="fill:var(--b4)">
+            <ellipse cx="120" cy="106" rx="34" ry="5"/><ellipse cx="520" cy="108" rx="44" ry="5"/><ellipse cx="860" cy="106" rx="30" ry="5"/>
+          </g>
+        </svg>
+        <div class="cap"><span>На столе <b>65</b></span><span>В группах <b>41</b></span><span>Свободно <b>24</b></span></div>
+      </div>
+
+      <section class="groups">
+        <article class="g">
+          <header><h2>Приложения</h2><span class="n">3</span><span class="tag auto">*.exe</span><span class="more">&middot;&middot;&middot;</span></header>
+          <div class="items">
+            <div class="it"><svg><use href="#i-globe"/></svg>Браузер</div>
+            <div class="it"><svg><use href="#i-code"/></svg>Редактор</div>
+            <div class="it"><svg><use href="#i-term"/></svg>Терминал</div>
+          </div>
+        </article>
+        <article class="g">
+          <header><h2>Документы</h2><span class="n">3</span><span class="tag auto">*.pdf *.docx</span><span class="more">&middot;&middot;&middot;</span></header>
+          <div class="items">
+            <div class="it"><svg><use href="#i-folder"/></svg>Проекты</div>
+            <div class="it"><svg><use href="#i-note"/></svg>Заметки</div>
+            <div class="it"><svg><use href="#i-down"/></svg>Загрузки</div>
+          </div>
+        </article>
+        <article class="g">
+          <header><h2>Игры</h2><span class="n">3</span><span class="tag">свёрнута при наведении</span><span class="more">&middot;&middot;&middot;</span></header>
+          <div class="items">
+            <div class="it"><svg><use href="#i-steam"/></svg>Steam</div>
+            <div class="it"><svg><use href="#i-jet"/></svg>War Thunder</div>
+            <div class="it"><svg><use href="#i-books"/></svg>Библиотека</div>
+          </div>
+        </article>
+        <article class="g">
+          <header><h2>Ярлыки</h2><span class="n">3</span><span class="more">&middot;&middot;&middot;</span></header>
+          <div class="items">
+            <div class="it"><svg><use href="#i-mon"/></svg>Рабочий стол</div>
+            <div class="it"><svg><use href="#i-drive"/></svg>Диск</div>
+            <div class="it"><svg><use href="#i-bin"/></svg>Корзина</div>
+          </div>
+        </article>
+      </section>
+    </main>
+  </div>
+</div>
+
+<p class="note">Набросок №1, «Лесной». Плоские слои вместо иллюстрации-фона, засечки только для заголовков, без скруглений и свечения. Данные условные.</p>
+<script>
+  const r=document.documentElement,b=document.getElementById('tg');
+  function set(t){r.dataset.theme=t;b.textContent=t==='dark'?'Светлая':'Тёмная';}
+  set(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');
+  b.onclick=()=>set(r.dataset.theme==='dark'?'light':'dark');
+</script>
+</body>
+</html>
